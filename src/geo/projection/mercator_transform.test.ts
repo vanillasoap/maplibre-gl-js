@@ -1269,9 +1269,8 @@ describe('MercatorTransform.isLocationOccluded', () => {
     test('a location behind a ridge on the simple CRS is hidden, where mercator math would place it in front of the ridge', () => {
         const tileSpanAtZoom2 = 45;
         const ridgeAcrossTheTwoMiddleRows = createDEM((_x, y) => (y === 3 || y === 4) ? 14 : 0);
-        const terrain = createDEMTerrain([new OverscaledTileID(2, 0, 2, 2, 1)], ridgeAcrossTheTwoMiddleRows);
         const transform = createSimpleCrsTransform(512, 512);
-        terrain.painter.transform = transform;
+        const terrain = createDEMTerrain([new OverscaledTileID(2, 0, 2, 2, 1)], ridgeAcrossTheTwoMiddleRows, 1, transform);
         transform.setCenter(new LngLat(tileSpanAtZoom2 / 2, tileSpanAtZoom2 * 0.25));
         transform.setZoom(2);
         transform.setPitch(75);

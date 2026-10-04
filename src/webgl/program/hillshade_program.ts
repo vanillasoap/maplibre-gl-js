@@ -130,7 +130,7 @@ const hillshadeUniformPrepareValues = (tileID: OverscaledTileID, dem: DEMData): 
  * applies no correction.
  */
 function getTileLatRange(painter: Painter, tileID: OverscaledTileID): [number, number] {
-    const worldCoordinateHelper = painter.transform.worldCoordinateHelper;
+    const worldCoordinateHelper = painter.frameRenderContext.transform.worldCoordinateHelper;
     if (!worldCoordinateHelper.wraps) return [0, 0];
     // for scaling the magnitude of a points slope by its latitude
     const tilesAtZoom = Math.pow(2, tileID.canonical.z);
