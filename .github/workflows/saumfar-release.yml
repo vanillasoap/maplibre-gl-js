@@ -1,0 +1,38 @@
+name: Saumfar release
+
+# On a tag `v<version>-saumfar.<n>`, builds the distribution, packs it with that version, and
+# attaches the tarball to a GitHub release. Saumfar depends on the release asset URL.
+
+on:
+  push:
+    tags:
+      - 'v*-saumfar.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v4
+        with:
+          node-version-file: '.nvmrc'
+      - run: npm ci
+      - run: npm run build-dist
+      - name: Pack with the tag's version
+        id: pack
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          npm --no-git-tag-version version "$version"
+          tarball=$(npm pack 2>/dev/null | tail -1)
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "${{ steps.pack.outputs.tarball }}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "MapLibre GL JS for Saumfar: upstream \`projection\` branch, the \`{bbox}\` tile URL token, merged with upstream main at $(git rev-parse --short HEAD^2 2>/dev/null || git rev-parse --short HEAD)."

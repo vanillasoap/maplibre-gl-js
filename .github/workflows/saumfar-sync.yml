@@ -1,0 +1,143 @@
+name: Saumfar sync
+
+# Merges maplibre/maplibre-gl-js `main` into `saumfar` on a branch `saumfar-sync`, runs the gate,
+# and opens a pull request into `saumfar` with the result. A conflict opens an issue instead.
+# The merge is never pushed to `saumfar` by this workflow: a clean merge can still drop the CRS
+# port from a file main refactored, and only the gate and a reader catch that.
+
+on:
+  schedule:
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: saumfar-sync
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.merge.outputs.status }}
+      behind: ${{ steps.merge.outputs.behind }}
+      conflicts: ${{ steps.merge.outputs.conflicts }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: saumfar
+          fetch-depth: 0
+      - id: merge
+        run: |
+          git config user.name "saumfar-sync"
+          git config user.email "saumfar-sync@users.noreply.github.com"
+          git remote add upstream https://github.com/maplibre/maplibre-gl-js.git
+          git fetch upstream main
+          behind=$(git rev-list --count HEAD..upstream/main)
+          echo "behind=$behind" >> "$GITHUB_OUTPUT"
+          if [ "$behind" = "0" ]; then
+            echo "status=up-to-date" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git checkout -B saumfar-sync
+          if git merge --no-edit upstream/main; then
+            echo "status=merged" >> "$GITHUB_OUTPUT"
+            git push --force origin saumfar-sync
+          else
+            echo "status=conflict" >> "$GITHUB_OUTPUT"
+            {
+              echo 'conflicts<<EOF'
+              git diff --name-only --diff-filter=U
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+            git merge --abort
+          fi
+
+  conflict:
+    needs: merge
+    if: needs.merge.outputs.status == 'conflict'
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          CONFLICTS: ${{ needs.merge.outputs.conflicts }}
+          BEHIND: ${{ needs.merge.outputs.behind }}
+        run: |
+          title="saumfar sync: merge conflict with upstream main"
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "\"$title\" in:title" --json number --jq '.[0].number')
+          body=$(printf '`saumfar` is %s commits behind `maplibre/maplibre-gl-js` main and the merge conflicts in:\n\n```\n%s\n```\n\nResolve locally: `git checkout saumfar && git merge upstream/main`, then compare against the last resolution noted in the Saumfar memory, run `npm run codegen` and the gate, push, and re-run this workflow.' "$BEHIND" "$CONFLICTS")
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "$body"
+          fi
+
+  gate:
+    needs: merge
+    if: needs.merge.outputs.status == 'merged'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      result: ${{ steps.summary.outputs.result }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: saumfar-sync
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v4
+        with:
+          node-version-file: '.nvmrc'
+      - name: install fonts for the render tests that draw text locally
+        run: sudo apt install fonts-noto-cjk fonts-noto-core
+      - name: Disable AppArmor
+        run: echo 0 | sudo tee /proc/sys/kernel/apparmor_restrict_unprivileged_userns
+      - name: Start display server
+        run: |
+          nohup Xvfb &
+          echo "DISPLAY=:0" >> $GITHUB_ENV
+      - run: npm ci
+      - name: Gate
+        id: gate
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          fail=0
+          step() { echo "== $1"; shift; if "$@" 2>&1 | tail -40; then echo "ok: $1" >> gate.txt; else echo "FAIL: $1" >> gate.txt; fail=1; fi; }
+          step lint npm run lint -- --max-warnings 0
+          step typecheck npm run typecheck
+          step unit npm run test-unit
+          step build-dist npm run build-dist
+          step render-projection npx vitest run test/integration/render/render.test.ts -t "projection/"
+          step render-terrain npx vitest run test/integration/render/render.test.ts -t "terrain"
+          step build-tests npm run test-build
+          exit $fail
+      - id: summary
+        run: |
+          echo "result=${{ steps.gate.outcome }}" >> "$GITHUB_OUTPUT"
+          {
+            echo 'gate<<EOF'
+            cat gate.txt
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+      - name: Open or update the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEHIND: ${{ needs.merge.outputs.behind }}
+          OUTCOME: ${{ steps.gate.outcome }}
+          GATE: ${{ steps.summary.outputs.gate }}
+        run: |
+          upstream=$(git rev-parse --short HEAD^2)
+          title="Merge upstream main into saumfar"
+          body=$(printf 'Automated merge of `maplibre/maplibre-gl-js` main (%s commits, head `%s`) into `saumfar`.\n\nGate: **%s**\n\n```\n%s\n```\n\nBefore merging, read the diff for files main refactored without a conflict: the CRS port can drop out of them silently. Known ones: `src/render/terrain_coverage.ts`, `src/ui/map.ts`, `src/webgl/program/hillshade_program.ts`.\n\nAfter merging, tag `v<version>-saumfar.N` to publish a tarball release.' "$BEHIND" "$upstream" "$OUTCOME" "$GATE")
+          existing=$(gh pr list --repo "$GITHUB_REPOSITORY" --head saumfar-sync --base saumfar --state open --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --head saumfar-sync --base saumfar --title "$title" --body "$body"
+          fi
+      - name: Fail the job when the gate failed
+        if: steps.gate.outcome == 'failure'
+        run: exit 1

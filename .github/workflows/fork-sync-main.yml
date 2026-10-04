@@ -1,0 +1,25 @@
+name: Fork sync main
+
+# Keeps this fork's `main` identical to maplibre/maplibre-gl-js `main`.
+# Nothing is ever committed to `main` on the fork, so this never conflicts.
+
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+      - run: |
+          git remote add upstream https://github.com/maplibre/maplibre-gl-js.git
+          git fetch upstream main
+          git push origin upstream/main:main
