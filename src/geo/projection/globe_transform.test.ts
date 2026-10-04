@@ -10,7 +10,7 @@ import {MercatorCoordinate} from '../mercator_coordinate.ts';
 import {tileCoordinatesToLocation} from './mercator_utils.ts';
 import {MercatorTransform} from './mercator_transform.ts';
 import {VerticalPerspectiveTransform} from './vertical_perspective_transform.ts';
-import {differenceOfAnglesDegrees, MAX_VALID_LATITUDE} from '../../util/util.ts';
+import {differenceOfAnglesDegrees} from '../../util/util.ts';
 
 function testPlaneAgainstLngLat(lngDegrees: number, latDegrees: number, plane: number[]) {
     const lat = latDegrees / 180.0 * Math.PI;
@@ -503,6 +503,15 @@ describe('GlobeTransform', () => {
             expect(globeTransform.isPointOnMapSurface(new Point(223, 147))).toBe(true);
             expect(globeTransform.isPointOnMapSurface(new Point(221, 144))).toBe(false);
         });
+
+        test('isPointOnMapSurface is false for point in sky, and true for point on surface', () => {
+            const pitchedTransform = new GlobeTransform({maxPitch: 85});
+            pitchedTransform.resize(640, 480);
+            pitchedTransform.setZoom(11);
+            pitchedTransform.setPitch(85);
+            expect(pitchedTransform.isPointOnMapSurface(new Point(320, 0))).toBe(false);
+            expect(pitchedTransform.isPointOnMapSurface(new Point(320, 479))).toBe(true);
+        });
     });
 
     test('pointCoordinate', () => {
@@ -784,7 +793,7 @@ describe('GlobeTransform', () => {
         test('change projection and make sure render world copies is kept', () => {
             const globeTransform = createGlobeTransform();
             globeTransform.setRenderWorldCopies(true);
-            
+
             expect(globeTransform.renderWorldCopies).toBeTruthy();
         });
 
@@ -814,6 +823,21 @@ describe('GlobeTransform', () => {
 
         expect(globeTransform.center.lng).toBeCloseTo(originalLng, 10);
         expect(globeTransform.center.lat).toBeCloseTo(originalLat, 10);
+    });
+
+    test('the center reaches the pole', () => {
+        const globeTransform = createGlobeTransform();
+        globeTransform.setCenter(new LngLat(0, 90));
+
+        expect(globeTransform.center.lat).toBe(90);
+    });
+
+    test('the center moves back towards the mercator edge as the area past it outgrows the viewport', () => {
+        const globeTransform = createGlobeTransform();
+        globeTransform.setCenter(new LngLat(0, 90));
+        globeTransform.setZoom(2.5);
+
+        expect(globeTransform.center.lat).toBeCloseTo(86.8327, 4);
     });
 
     describe('versorSetLocationAtPoint', () => {
@@ -905,12 +929,12 @@ describe('GlobeTransform', () => {
         });
 
         test('panning does not freeze near a centred pole', () => {
-            // With the pole centred the dial supplies all of the longitude change, and the center
-            // latitude is already clamped, so if the dial gives up the drag stops moving entirely.
+            // With the pole centred the dial supplies all of the longitude change, so if the dial
+            // gives up the drag stops moving entirely.
             const tr = createGlobeTransform();
             tr.setZoom(1);
             tr.setTransitionState(1);
-            tr.setCenter(new LngLat(0, MAX_VALID_LATITUDE));
+            tr.setCenter(new LngLat(0, 90));
             const pole = tr.locationToScreenPoint(new LngLat(0, 90));
             const cursor = new Point(pole.x + 10, pole.y);
             const panDelta = new Point(0, 8); // tangential, so it sweeps around the pole
@@ -918,6 +942,18 @@ describe('GlobeTransform', () => {
             const location = tr.screenPointToLocation(cursor.sub(panDelta));
             versorSetLocationAtPoint(tr, location, cursor, panDelta);
             expect(Math.abs(differenceOfAnglesDegrees(lngBefore, tr.center.lng))).toBeGreaterThan(1);
+        });
+
+        test('dragging past the pole stops on it', () => {
+            const tr = createGlobeTransform();
+            tr.setZoom(1);
+            tr.setTransitionState(1);
+            tr.setCenter(new LngLat(0, 88));
+            const panDelta = new Point(0, 100);
+
+            versorSetLocationAtPoint(tr, tr.screenPointToLocation(tr.centerPoint), tr.centerPoint.add(panDelta), panDelta);
+
+            expect(tr.center.lat).toBe(90);
         });
 
         test('panning off the globe is slower than on it', () => {
