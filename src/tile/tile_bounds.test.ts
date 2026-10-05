@@ -38,3 +38,17 @@ describe('TileBounds.contains', () => {
         }
     });
 });
+
+test('contains tiles along a curved CRS edge between its corners', () => {
+    const helper = new CrsWorldCoordinateHelper({
+        name: 'curved-bounds',
+        tileMatrix: {origin: [-90, 90], extentAtZoom0: 180},
+        project(lng, lat) { return [lng, lat + (lng - 3) ** 2 / 20]; },
+        unproject(x, y) { return [x, y - (x - 3) ** 2 / 20]; },
+    });
+    const bounds = new TileBounds([-10, -10, 10, 10], 0, 24, helper);
+    const zoom = 22;
+    const {x, y} = helper.worldFromLngLat(3, -9.99999);
+
+    expect(bounds.contains(new CanonicalTileID(zoom, Math.floor(x * 2 ** zoom), Math.floor(y * 2 ** zoom)))).toBe(true);
+});

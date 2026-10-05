@@ -199,7 +199,7 @@ export class RasterTileSource extends Evented<SourceEventType> implements Source
     }
 
     hasTile(tileID: OverscaledTileID): boolean {
-        return !this.tileBounds || this.tileBounds.contains(tileID.canonical);
+        return !this.tileBounds || this.tileBounds.contains(tileID.canonical, this.map.style.projection.worldCoordinateHelper);
     }
 
     async loadTile(tile: Tile): Promise<void> {

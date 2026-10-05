@@ -145,7 +145,7 @@ export class VectorTileSource extends Evented<SourceEventType> implements Source
     }
 
     hasTile(tileID: OverscaledTileID): boolean {
-        return !this.tileBounds || this.tileBounds.contains(tileID.canonical);
+        return !this.tileBounds || this.tileBounds.contains(tileID.canonical, this.map.style.projection.worldCoordinateHelper);
     }
 
     onAdd(map: Map): void {

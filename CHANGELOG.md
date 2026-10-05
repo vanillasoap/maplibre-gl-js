@@ -7,6 +7,7 @@
 - _...Add new stuff here..._
 
 ### 🐞 Bug fixes
+- Fix curved planar CRS source bounds and preserve tile coverage and GeoJSON positions when switching projections.
 - Fix `globeDistanceOfLocationsPixels` returning `NaN` when two copies of the same point have a dot product slightly above 1 ([#8624](https://github.com/maplibre/maplibre-gl-js/pull/8624))(by [@Dimononon](https://github.com/Dimononon))
 - _...Add new stuff here..._
 

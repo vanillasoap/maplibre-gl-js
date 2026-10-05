@@ -54,6 +54,13 @@ type MercatorRay = {
 
 export class MercatorTransform implements ITransform {
     private _helper: TransformHelper;
+    /** Projected max bounds shared with clones until the geographic bounds or mapping changes. */
+    private _worldBounds: {
+        helper: WorldCoordinateHelper;
+        lngRange: [number, number];
+        latRange: [number, number];
+        box: ReturnType<typeof lngLatBoxToWorldBox>;
+    };
 
     //
     // Implementation of transform getters and setters
@@ -292,6 +299,7 @@ export class MercatorTransform implements ITransform {
     public clone(): ITransform {
         const clone = new MercatorTransform();
         clone.setWorldCoordinateHelper(this.worldCoordinateHelper);
+        clone._worldBounds = this._worldBounds;
         clone.apply(this, false);
         return clone;
     }
@@ -726,9 +734,16 @@ export class MercatorTransform implements ITransform {
         const worldCoordinateHelper = this.worldCoordinateHelper;
         const lngRange = this._helper._lngRange;
         const latRange = this._helper._latRange;
-        const box = lngRange && latRange ?
-            lngLatBoxToWorldBox(worldCoordinateHelper, lngRange[0], latRange[0], lngRange[1], latRange[1]) :
-            {minX: 0, minY: 0, maxX: 1, maxY: 1};
+        let box = {minX: 0, minY: 0, maxX: 1, maxY: 1};
+        if (lngRange && latRange) {
+            if (this._worldBounds?.helper !== worldCoordinateHelper || this._worldBounds.lngRange !== lngRange || this._worldBounds.latRange !== latRange) {
+                this._worldBounds = {
+                    helper: worldCoordinateHelper, lngRange, latRange,
+                    box: lngLatBoxToWorldBox(worldCoordinateHelper, lngRange[0], latRange[0], lngRange[1], latRange[1]),
+                };
+            }
+            box = this._worldBounds.box;
+        }
         const worldSize = this.tileSize * zoomScale(zoom);
         const minX = Math.max(box.minX, 0) * worldSize;
         const maxX = Math.min(box.maxX, 1) * worldSize;

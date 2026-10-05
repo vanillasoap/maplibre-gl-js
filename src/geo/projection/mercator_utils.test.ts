@@ -199,3 +199,17 @@ describe('lngLatBoxToWorldBox and worldBoxToLngLatBox', () => {
         expect(back.north).toBeGreaterThan(40);
     });
 });
+
+test('inverse bounds include extrema between curved edge samples', () => {
+    const helper = new CrsWorldCoordinateHelper({
+        name: 'curved-bounds',
+        tileMatrix: {origin: [-90, 90], extentAtZoom0: 180},
+        project(lng, lat) { return [lng, lat + (lng - 3) ** 2 / 20]; },
+        unproject(x, y) { return [x, y - (x - 3) ** 2 / 20]; },
+    });
+    const bounds = worldBoxToLngLatBox(helper, 80 / 180, 80 / 180, 100 / 180, 100 / 180);
+
+    expect(bounds.north).toBeGreaterThanOrEqual(10);
+    expect(bounds.north).toBeCloseTo(10, 3);
+    expect(bounds.south).toBeLessThanOrEqual(-18.45);
+});

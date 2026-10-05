@@ -136,43 +136,63 @@ export function cameraDirectionFromPitchBearing(pitch: number, bearing: number):
     return {x, y, z};
 }
 
+/** A rectangle in the output coordinates of a projection. */
+type ProjectedBox = {minX: number; minY: number; maxX: number; maxY: number};
+
 /**
- * Projects the four corners of a lng/lat box and returns the world rectangle that contains them.
- * For a cylindrical mapping like mercator this is exactly the projected box; for a mapping where
- * `x` and `y` both depend on `lng` and `lat` it is the axis-aligned hull of the corners, which is
- * correct for axis-aligned lng/lat boxes up to the curvature of the box edges.
+ * Approximates the bounds of a smoothly projected rectangle by subdividing its edges. Each segment is split until its
+ * midpoint deviates from the chord by at most `tolerance`, with at least eight segments per edge.
+ * Twice the remaining midpoint error pads each segment for unresolved curvature between samples.
+ * The depth limit bounds work near projection singularities.
  */
-export function lngLatBoxToWorldBox(worldCoordinateHelper: WorldCoordinateHelper, west: number, south: number, east: number, north: number): {minX: number; minY: number; maxX: number; maxY: number} {
-    const corners = [
-        worldCoordinateHelper.worldFromLngLat(west, north),
-        worldCoordinateHelper.worldFromLngLat(east, north),
-        worldCoordinateHelper.worldFromLngLat(east, south),
-        worldCoordinateHelper.worldFromLngLat(west, south),
-    ];
-    return {
-        minX: Math.min(corners[0].x, corners[1].x, corners[2].x, corners[3].x),
-        minY: Math.min(corners[0].y, corners[1].y, corners[2].y, corners[3].y),
-        maxX: Math.max(corners[0].x, corners[1].x, corners[2].x, corners[3].x),
-        maxY: Math.max(corners[0].y, corners[1].y, corners[2].y, corners[3].y),
+function projectBoxEdges(project: (x: number, y: number) => {x: number; y: number}, minX: number, minY: number, maxX: number, maxY: number, tolerance: number, curved: boolean): ProjectedBox {
+    const corners: Array<[number, number]> = [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]];
+    const projected = corners.map(([x, y]) => project(x, y));
+    const box = {
+        minX: Math.min(...projected.map(p => p.x)),
+        minY: Math.min(...projected.map(p => p.y)),
+        maxX: Math.max(...projected.map(p => p.x)),
+        maxY: Math.max(...projected.map(p => p.y)),
     };
+    if (!curved) return box;
+
+    function sampleEdge(ax: number, ay: number, bx: number, by: number, a: {x: number; y: number}, b: {x: number; y: number}, depth: number): void {
+        const mx = (ax + bx) / 2;
+        const my = (ay + by) / 2;
+        const midpoint = project(mx, my);
+        const errorX = Math.abs(midpoint.x - (a.x + b.x) / 2);
+        const errorY = Math.abs(midpoint.y - (a.y + b.y) / 2);
+        if (depth < 12 && (depth < 3 || Math.max(errorX, errorY) > tolerance)) {
+            sampleEdge(ax, ay, mx, my, a, midpoint, depth + 1);
+            sampleEdge(mx, my, bx, by, midpoint, b, depth + 1);
+            return;
+        }
+        box.minX = Math.min(box.minX, a.x - 2 * errorX, midpoint.x - 2 * errorX, b.x - 2 * errorX);
+        box.minY = Math.min(box.minY, a.y - 2 * errorY, midpoint.y - 2 * errorY, b.y - 2 * errorY);
+        box.maxX = Math.max(box.maxX, a.x + 2 * errorX, midpoint.x + 2 * errorX, b.x + 2 * errorX);
+        box.maxY = Math.max(box.maxY, a.y + 2 * errorY, midpoint.y + 2 * errorY, b.y + 2 * errorY);
+    }
+
+    for (let i = 0; i < 4; i++) {
+        const next = (i + 1) % 4;
+        sampleEdge(...corners[i], ...corners[next], projected[i], projected[next], 0);
+    }
+    return box;
 }
 
 /**
- * Maps the four corners of a world rectangle back to lng/lat and returns the box that contains them:
- * the inverse of {@link lngLatBoxToWorldBox}, with the same axis-aligned hull where `x` and `y` both
- * depend on `lng` and `lat`.
+ * Projects a lng/lat box into world coordinates, sampling curved CRS edges to include their extrema.
+ * Mercator's axis-aligned edges need only their corners.
  */
+export function lngLatBoxToWorldBox(worldCoordinateHelper: WorldCoordinateHelper, west: number, south: number, east: number, north: number): ProjectedBox {
+    return projectBoxEdges((lng, lat) => worldCoordinateHelper.worldFromLngLat(lng, lat), west, south, east, north, 1e-7, !worldCoordinateHelper.wraps);
+}
+
+/** Maps a world rectangle back to lng/lat, including extrema along curved CRS edges. */
 export function worldBoxToLngLatBox(worldCoordinateHelper: WorldCoordinateHelper, minX: number, minY: number, maxX: number, maxY: number): {west: number; south: number; east: number; north: number} {
-    const corners = [
-        worldCoordinateHelper.lngLatFromWorld(minX, minY),
-        worldCoordinateHelper.lngLatFromWorld(maxX, minY),
-        worldCoordinateHelper.lngLatFromWorld(maxX, maxY),
-        worldCoordinateHelper.lngLatFromWorld(minX, maxY),
-    ];
-    return {
-        west: Math.min(corners[0].lng, corners[1].lng, corners[2].lng, corners[3].lng),
-        south: Math.min(corners[0].lat, corners[1].lat, corners[2].lat, corners[3].lat),
-        east: Math.max(corners[0].lng, corners[1].lng, corners[2].lng, corners[3].lng),
-        north: Math.max(corners[0].lat, corners[1].lat, corners[2].lat, corners[3].lat),
-    };
+    const box = projectBoxEdges((x, y) => {
+        const {lng, lat} = worldCoordinateHelper.lngLatFromWorld(x, y);
+        return {x: lng, y: lat};
+    }, minX, minY, maxX, maxY, 1e-5, !worldCoordinateHelper.wraps);
+    return {west: box.minX, south: clamp(box.minY, -90, 90), east: box.maxX, north: clamp(box.maxY, -90, 90)};
 }
