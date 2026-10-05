@@ -7,6 +7,7 @@
 - _...Add new stuff here..._
 
 ### 🐞 Bug fixes
+- Fix severe panning lag with line layers on affected macOS graphics paths by aligning line vertices to four bytes.
 - Fix curved planar CRS source bounds and preserve tile coverage and GeoJSON positions when switching projections.
 - Fix `globeDistanceOfLocationsPixels` returning `NaN` when two copies of the same point have a dot product slightly above 1 ([#8624](https://github.com/maplibre/maplibre-gl-js/pull/8624))(by [@Dimononon](https://github.com/Dimononon))
 - _...Add new stuff here..._

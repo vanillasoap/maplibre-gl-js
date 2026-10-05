@@ -1,6 +1,7 @@
 import {describe, beforeEach, test, expect, vi} from 'vitest';
 import {VertexBuffer} from './vertex_buffer.ts';
-import {StructArrayLayout3i6} from '../data/array_types.g.ts';
+import {LineLayoutArray, StructArrayLayout3i6} from '../data/array_types.g.ts';
+import {members as lineAttributes} from '../data/bucket/line_attributes.ts';
 import {Context} from './context.ts';
 import {createNullGL} from '../util/test/null_gl.ts';
 
@@ -70,6 +71,32 @@ describe('VertexBuffer', () => {
         expect(floatSpy.mock.calls).toEqual([
             [5, 1, context.gl['SHORT'], false, 6, 300]
         ]);
+    });
+
+    test('keeps line records and segmented attribute pointers four-byte aligned', () => {
+        const context = new Context(gl);
+        const array = new LineLayoutArray();
+        array.emplaceBack(11, 12, 1, 2, 3, 4, -5, 6);
+        array.emplaceBack(-21, 22, 255, 254, 253, 252, 63, -64);
+        const originalBuffer = array.arrayBuffer;
+        const buffer = new VertexBuffer(context, array, lineAttributes);
+
+        expect(buffer.itemSize % 4).toBe(0);
+        expect(vi.mocked(gl.bufferData).mock.lastCall[1]).toBe(originalBuffer);
+        const uploaded = new DataView(originalBuffer);
+        const offset = buffer.itemSize;
+        expect([uploaded.getInt16(offset, true), uploaded.getInt16(offset + 2, true)]).toEqual([-21, 22]);
+        expect(Array.from(new Uint8Array(uploaded.buffer, offset + 4, 4))).toEqual([255, 254, 253, 252]);
+        expect([uploaded.getInt8(offset + 8), uploaded.getInt8(offset + 9)]).toEqual([63, -64]);
+
+        buffer.setVertexAttribPointers(gl, {attributes: {
+            a_pos_normal: {location: 0, isInteger: true},
+            a_data: {location: 1, isInteger: true},
+            a_offset_normal: {location: 2, isInteger: false}
+        }} as any, 1);
+        expect(gl.vertexAttribIPointer).toHaveBeenCalledWith(0, 2, gl.SHORT, 12, 12);
+        expect(gl.vertexAttribIPointer).toHaveBeenCalledWith(1, 4, gl.UNSIGNED_BYTE, 12, 16);
+        expect(gl.vertexAttribPointer).toHaveBeenCalledWith(2, 2, gl.BYTE, false, 12, 20);
     });
 
     test('static buffer frees StructArray typed views after upload', () => {
