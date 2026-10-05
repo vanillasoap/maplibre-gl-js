@@ -1,4 +1,4 @@
-import {describe, test, expect, vi, beforeEach} from 'vitest';
+import {describe, test, expect, vi, beforeEach, afterEach} from 'vitest';
 import {Tile} from '../tile/tile.ts';
 import {OverscaledTileID} from '../tile/tile_id.ts';
 import {GeoJSONSource, type GeoJSONSourceShouldReloadTileOptions, type GeoJSONSourceOptions} from './geojson_source.ts';
@@ -10,6 +10,8 @@ import {getWrapDispatcher, sleep, waitForEvent, waitForMetadataEvent} from '../u
 import {AbortError} from '../util/abort_error.ts';
 import {type ActorMessage, type ClusterIDAndSource, type GeoJSONWorkerSourceLoadDataResult, MessageType} from '../util/actor_messages.ts';
 import {CrsWorldCoordinateHelper, simpleCrs} from '../geo/projection/crs.ts';
+import {latFromMercatorY} from '../geo/mercator_coordinate.ts';
+import {fakeServer, type FakeServer} from 'nise';
 import {MercatorProjection} from '../geo/projection/mercator_projection.ts';
 
 import type {IReadonlyTransform} from '../geo/transform_interface.ts';
@@ -1544,5 +1546,180 @@ describe('GeoJSONSource.getClusterOptions', () => {
 
         await source.setClusterOptions({cluster: false});
         expect(source.getClusterOptions()).toEqual({cluster: false, clusterMaxZoom: 9, clusterRadius: 40});
+    });
+});
+
+describe('GeoJSONSource in a planar projection', () => {
+    /** lng/lat 45/45 is world (0.75, 0.25) in the simple CRS; mercator puts that world position at this lng/lat. */
+    const pseudoLngLatOf45: GeoJSON.Position = [90, latFromMercatorY(0.25)];
+
+    /** A map stub with what the source reads to send data and to load a tile. */
+    function createMapWithProjection(projection: MercatorProjection): Map {
+        return {
+            style: {projection},
+            _requestManager: {transformRequest: (url: string) => ({url})},
+            getPixelRatio: () => 1,
+            painter: {},
+            showCollisionBoxes: false
+        } as any as Map;
+    }
+
+    function createSimpleCrsMap(): Map {
+        return createMapWithProjection(new MercatorProjection(new CrsWorldCoordinateHelper(simpleCrs)));
+    }
+
+    function createMercatorMap(): Map {
+        return createMapWithProjection(new MercatorProjection());
+    }
+
+    function createPointData(): GeoJSON.FeatureCollection {
+        return {
+            type: 'FeatureCollection',
+            features: [{type: 'Feature', id: 1, properties: {name: 'p'}, geometry: {type: 'Point', coordinates: [45, 45]}}]
+        };
+    }
+
+    /** A source whose dispatcher records every message and answers `loadData` with `{}` and tile loads with `null`. */
+    function createSpiedSource(options: Partial<GeoJSONSourceOptions>, map: Map) {
+        const spy = vi.fn();
+        const source = new GeoJSONSource('id', options as GeoJSONSourceOptions, wrapDispatcher({
+            sendAsync(message: ActorMessage<MessageType>) {
+                spy(message);
+                const isTile = message.type === MessageType.loadTile || message.type === MessageType.reloadTile;
+                return Promise.resolve(isTile ? null : {});
+            }
+        }), undefined);
+        source.map = map;
+        return {source, spy};
+    }
+
+    /** The `loadData` parameters the source sent, in order; tile requests are left out. */
+    function sentLoadData(spy: ReturnType<typeof vi.fn>): LoadGeoJSONParameters[] {
+        return spy.mock.calls
+            .map(call => call[0] as ActorMessage<MessageType>)
+            .filter(message => message.type === MessageType.loadData)
+            .map(message => message.data as LoadGeoJSONParameters);
+    }
+
+    function pointOf(data: GeoJSON.GeoJSON): GeoJSON.Position {
+        return ((data as GeoJSON.FeatureCollection).features[0].geometry as GeoJSON.Point).coordinates;
+    }
+
+    function expectPseudo(coordinates: GeoJSON.Position) {
+        expect(coordinates[0]).toBeCloseTo(pseudoLngLatOf45[0], 9);
+        expect(coordinates[1]).toBeCloseTo(pseudoLngLatOf45[1], 9);
+    }
+
+    test('sends object data pre-projected and keeps the original', async () => {
+        const data = createPointData();
+        const {source, spy} = createSpiedSource({data}, createSimpleCrsMap());
+        source.load();
+        await waitForMetadataEvent(source);
+
+        const [sent] = sentLoadData(spy);
+        expect(sent.data).not.toBe(data);
+        expectPseudo(pointOf(sent.data as GeoJSON.GeoJSON));
+        expect(pointOf(data)).toEqual([45, 45]);
+        expect(await source.getData()).toBe(data);
+    });
+
+    test('sends mercator data as is', async () => {
+        const data = createPointData();
+        const {source, spy} = createSpiedSource({data}, createMercatorMap());
+        source.load();
+        await waitForMetadataEvent(source);
+        expect(sentLoadData(spy)[0].data).toBe(data);
+    });
+
+    test('pre-projects the features a diff adds and the geometries it updates', async () => {
+        const {source, spy} = createSpiedSource({data: createPointData()}, createSimpleCrsMap());
+        source.load();
+        await waitForMetadataEvent(source);
+
+        await source.updateData({
+            add: [{type: 'Feature', id: 2, properties: {}, geometry: {type: 'Point', coordinates: [45, 45]}}],
+            update: [{id: 1, newGeometry: {type: 'Point', coordinates: [45, 45]}}]
+        });
+
+        const diff = sentLoadData(spy)[1].dataDiff;
+        expectPseudo((diff.add[0].geometry as GeoJSON.Point).coordinates);
+        expectPseudo((diff.update[0].newGeometry as GeoJSON.Point).coordinates);
+        expect(pointOf(await source.getData())).toEqual([45, 45]);
+    });
+
+    describe('url data', () => {
+        let server: FakeServer;
+        beforeEach(() => {
+            global.fetch = null;
+            server = fakeServer.create();
+            server.respondImmediately = true;
+        });
+        afterEach(() => {
+            server.restore();
+        });
+
+        test('fetches on the main thread, sends it pre-projected and keeps the fetched data', async () => {
+            server.respondWith('http://example.com/data.geojson', JSON.stringify(createPointData()));
+            const {source, spy} = createSpiedSource({data: 'http://example.com/data.geojson'}, createSimpleCrsMap());
+            source.load();
+            await waitForMetadataEvent(source);
+
+            const [sent] = sentLoadData(spy);
+            expect(sent.request).toBeUndefined();
+            expectPseudo(pointOf(sent.data as GeoJSON.GeoJSON));
+            expect(server.requests[0].url).toBe('http://example.com/data.geojson');
+            expect(pointOf(await source.getData())).toEqual([45, 45]);
+        });
+
+        test('leaves the fetch to the worker on mercator', async () => {
+            const {source, spy} = createSpiedSource({data: 'http://example.com/data.geojson'}, createMercatorMap());
+            source.load();
+            await waitForMetadataEvent(source);
+
+            expect(sentLoadData(spy)[0].request.url).toBe('http://example.com/data.geojson');
+            expect(server.requests).toHaveLength(0);
+        });
+    });
+
+    test('maps cluster leaves back from the pseudo lng/lat the worker holds', async () => {
+        const {source} = createSpiedSource({data: createPointData(), cluster: true}, createSimpleCrsMap());
+        source.load();
+        await waitForMetadataEvent(source);
+        const worker = {
+            async sendAsync() {
+                return [{type: 'Feature', properties: {}, geometry: {type: 'Point', coordinates: pseudoLngLatOf45}}];
+            }
+        };
+        source.actorPromise = Promise.resolve(worker as any);
+
+        const [leaf] = await source.getClusterLeaves(1, 10, 0);
+        const [lng, lat] = (leaf.geometry as GeoJSON.Point).coordinates;
+        expect(lng).toBeCloseTo(45, 9);
+        expect(lat).toBeCloseTo(45, 9);
+    });
+
+    test('resends the data pre-projected when a tile loads after the projection became planar', async () => {
+        const map = createMercatorMap();
+        const {source, spy} = createSpiedSource({data: createPointData()}, map);
+        source.load();
+        await waitForMetadataEvent(source);
+        expect(pointOf(sentLoadData(spy)[0].data as GeoJSON.GeoJSON)).toEqual([45, 45]);
+
+        map.style.projection = new MercatorProjection(new CrsWorldCoordinateHelper(simpleCrs));
+        const resent = waitForMetadataEvent(source);
+        await source.loadTile(new Tile(new OverscaledTileID(0, 0, 0, 0, 0), 512));
+        await resent;
+
+        expectPseudo(pointOf(sentLoadData(spy)[1].data as GeoJSON.GeoJSON));
+    });
+
+    test('does not resend the data when a tile loads under the same projection', async () => {
+        const {source, spy} = createSpiedSource({data: createPointData()}, createSimpleCrsMap());
+        source.load();
+        await waitForMetadataEvent(source);
+
+        await source.loadTile(new Tile(new OverscaledTileID(0, 0, 0, 0, 0), 512));
+
+        expect(sentLoadData(spy)).toHaveLength(1);
     });
 });
