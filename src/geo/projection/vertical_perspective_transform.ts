@@ -125,8 +125,8 @@ export class VerticalPerspectiveTransform implements ITransform {
     isPaddingEqual(padding: PaddingOptions): boolean {
         return this._helper.isPaddingEqual(padding);
     }
-    resize(width: number, height: number): void {
-        this._helper.resize(width, height);
+    resize(width: number, height: number, constrain: boolean = true): void {
+        this._helper.resize(width, height, constrain);
     }
     getMaxBounds(): LngLatBounds {
         return this._helper.getMaxBounds();
@@ -856,7 +856,7 @@ export class VerticalPerspectiveTransform implements ITransform {
         const pos = angularCoordinatesToSurfaceVector(lnglat);
 
         if (terrain) {
-            const elevation = terrain.getElevationForLngLatZoom(lnglat, this._helper._tileZoom);
+            const elevation = terrain.getElevationForLngLat(lnglat, this);
             vec3.scale(pos, pos, 1.0 + elevation / earthRadius);
         }
 

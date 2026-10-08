@@ -1,13 +1,13 @@
-import {describe, test, expect} from 'vitest';
+import {describe, test, expect, vi} from 'vitest';
 import Point from '@mapbox/point-geometry';
-import {LngLat} from '../lng_lat.ts';
+import {LngLat, earthRadius} from '../lng_lat.ts';
 import {CanonicalTileID, OverscaledTileID, UnwrappedTileID} from '../../tile/tile_id.ts';
 import {fixedLngLat, fixedCoord} from '../../../test/unit/lib/fixed.ts';
 import {MercatorTransform} from './mercator_transform.ts';
 import {LngLatBounds} from '../lng_lat_bounds.ts';
 import {getMercatorHorizon} from './mercator_utils.ts';
 import {mat4} from 'gl-matrix';
-import {createDEM, createDEMTerrain, createTerrain, expectToBeCloseToArray, createSimpleCrsTransform} from '../../util/test/util.ts';
+import {createCoverageIndex, createDEM, createDEMTerrain, createTerrain, expectToBeCloseToArray, createSimpleCrsTransform} from '../../util/test/util.ts';
 import {EXTENT} from '../../data/extent.ts';
 import {MercatorCoordinate, mercatorZfromAltitude} from '../mercator_coordinate.ts';
 
@@ -387,12 +387,11 @@ describe('transform', () => {
         transform.recalculateZoomAndCenter(terrain as any);
         expect(transform.elevation).toBe(400);
         expect(transform.center.lng).toBeCloseTo(10, 10);
-        expect(transform.center.lat).toBeCloseTo(49.998201325627264, 10);
+        expect(transform.center.lat).toBeCloseTo(49.99820083233257, 10);
         expect(transform.getCameraLngLat().lng).toBeCloseTo(expectedCamLngLat.lng, 10);
-        // Latitude precision is lower as a compromise to a stable recalculateZoomAndCenter at extreme latitudes
-        expect(transform.getCameraLngLat().lat).toBeCloseTo(expectedCamLngLat.lat, 5);
+        expect(transform.getCameraLngLat().lat).toBeCloseTo(expectedCamLngLat.lat, 10);
         expect(transform.getCameraAltitude()).toBeCloseTo(expectedAltitude, 10);
-        expect(transform.zoom).toBeCloseTo(14.184585871638795, 10);
+        expect(transform.zoom).toBeCloseTo(14.184585886440683, 10);
     });
 
     test('recalculateZoomAndCenter solves at the rendered terrain surface, not the tile-zoom DEM sample', () => {
@@ -440,10 +439,161 @@ describe('transform', () => {
         transform.recalculateZoomAndCenter(terrain as any);
         expect(transform.elevation).toBe(-200);
         expect(transform.getCameraLngLat().lng).toBeCloseTo(expectedCamLngLat.lng, 10);
-        // Latitude precision is lower as a compromise to a stable recalculateZoomAndCenter at extreme latitudes
-        expect(transform.getCameraLngLat().lat).toBeCloseTo(expectedCamLngLat.lat, 5);
+        expect(transform.getCameraLngLat().lat).toBeCloseTo(expectedCamLngLat.lat, 10);
         expect(transform.getCameraAltitude()).toBeCloseTo(expectedAltitude, 10);
-        expect(transform.zoom).toBeCloseTo(13.68939960698451, 10);
+        expect(transform.zoom).toBeCloseTo(13.689399565250616, 10);
+    });
+
+    test('recalculateZoomAndCenter looks past terrain nearer than maxZoom allows once the center ray has passed over it', () => {
+        const transform = new MercatorTransform({minZoom: 0, maxZoom: 12.5, minPitch: 0, maxPitch: 85, renderWorldCopies: true});
+        transform.setCenter(new LngLat(0.1758, -0.03));
+        transform.setZoom(12);
+        transform.setPitch(80);
+        transform.resize(512, 512);
+        const plateauUnderTheCameraThenAPlain = createDEM((_x, y) => y >= 26 ? 2400 : 0, 64);
+        const terrain = createDEMTerrain([new OverscaledTileID(10, 0, 10, 512, 512)], plateauUnderTheCameraThenAPlain);
+        const cameraLngLat = transform.getCameraLngLat();
+        const cameraAltitude = transform.getCameraAltitude();
+
+        transform.recalculateZoomAndCenter(terrain);
+
+        expect(transform.zoom).toBeCloseTo(12, 6);
+        expect(transform.elevation).toBeCloseTo(0, 6);
+        expect(transform.getCameraLngLat().lat).toBeCloseTo(cameraLngLat.lat, 9);
+        expect(transform.getCameraAltitude()).toBeCloseTo(cameraAltitude, 3);
+    });
+
+    test('recalculateZoomAndCenter leaves out terrain between the camera and the near clipping plane when maxZoom lets the camera nearer than that plane', () => {
+        const transform = new MercatorTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 85, renderWorldCopies: true});
+        transform.setCenter(new LngLat(0, 0));
+        transform.setZoom(12);
+        transform.setPitch(80);
+        transform.resize(512, 512);
+        const metersPerDegree = 2 * Math.PI * earthRadius / 360;
+        const wallLat = transform.getCameraLngLat().lat + 100 / metersPerDegree;
+        const wallTop = transform.getCameraAltitude() - 12;
+        const wallBeforeTheNearPlane = (_lng: number, lat: number) => Math.abs(lat - wallLat) < 15 / metersPerDegree ? wallTop : 0;
+        const terrain = createDEMTerrain([], null);
+        vi.spyOn(terrain, 'getCoverageIndex').mockReturnValue(createCoverageIndex(wallBeforeTheNearPlane, 0, wallTop));
+        vi.spyOn(terrain, 'getElevationForLngLat').mockImplementation(lngLat => wallBeforeTheNearPlane(lngLat.lng, lngLat.lat));
+
+        transform.recalculateZoomAndCenter(terrain);
+
+        expect(transform.zoom).toBeCloseTo(12, 6);
+        expect(transform.center.lat).toBeCloseTo(0, 6);
+    });
+
+    test('recalculateZoomAndCenter does not look past terrain the center ray is still inside at the distance maxZoom allows', () => {
+        const transform = new MercatorTransform({minZoom: 0, maxZoom: 12.5, minPitch: 0, maxPitch: 85, renderWorldCopies: true});
+        transform.setCenter(new LngLat(0.1758, -0.03));
+        transform.setZoom(12);
+        transform.setPitch(80);
+        transform.resize(512, 512);
+        const blockBetweenTheCameraAndTheCenter = createDEM((_x, y) => y >= 8 && y < 22 ? 1500 : 0, 64);
+        const terrain = createDEMTerrain([new OverscaledTileID(10, 0, 10, 512, 512)], blockBetweenTheCameraAndTheCenter);
+
+        transform.recalculateZoomAndCenter(terrain);
+
+        expect(transform.elevation).toBeCloseTo(1500, 6);
+        expect(transform.zoom).toBe(12.5);
+    });
+
+    test('recalculateZoomAndCenter at maxZoom points the camera at the new center', () => {
+        const transform = new MercatorTransform({minZoom: 0, maxZoom: 12, minPitch: 0, maxPitch: 85, renderWorldCopies: true});
+        transform.setCenter(new LngLat(0.1758, -0.03));
+        transform.setZoom(12);
+        transform.setPitch(80);
+        transform.resize(512, 512);
+        const terrain = createDEMTerrain([new OverscaledTileID(10, 0, 10, 512, 512)], createDEM(() => 2400, 64));
+
+        transform.recalculateZoomAndCenter(terrain);
+
+        expect(transform.center.lat).toBeCloseTo(-0.152407, 6);
+        expect(transform.screenPointToLocation(transform.centerPoint).lat).toBeCloseTo(-0.152407, 6);
+    });
+
+    test('recalculateZoomAndCenter puts the center on sloped terrain with the camera where it was', () => {
+        const transform = new MercatorTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 85, renderWorldCopies: true});
+        transform.resize(512, 512);
+        transform.setZoom(11);
+        transform.setPitch(85);
+        transform.setCenter(new LngLat(0.7, 60));
+        const cameraBefore = transform.getCameraLngLat();
+        const altitudeBefore = transform.getCameraAltitude();
+        const demTile = new OverscaledTileID(8, 0, 8, 128, 74);
+        const risingNorthward = createDEM((_x, y) => (64 - y) * 30, 64);
+        const terrain = createDEMTerrain([demTile], risingNorthward);
+        terrain.tileManager.getSourceTile = () => ({tileID: demTile, dem: risingNorthward} as Tile);
+
+        transform.recalculateZoomAndCenter(terrain);
+
+        expect(transform.elevation).toBeCloseTo(997.526, 2);
+        expect(transform.getCameraLngLat().lat).toBeCloseTo(cameraBefore.lat, 8);
+        expect(transform.getCameraLngLat().lng).toBeCloseTo(cameraBefore.lng, 8);
+        expect(transform.getCameraAltitude()).toBeCloseTo(altitudeBefore, 6);
+    });
+
+    test('recalculateZoomAndCenter keeps the camera where it is when the center moves to another latitude', () => {
+        const transform = new MercatorTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 85, renderWorldCopies: true});
+        transform.resize(512, 512);
+        transform.setCenter(new LngLat(10, 60));
+        transform.setZoom(11);
+        transform.setPitch(85);
+        const cameraBefore = transform.getCameraLngLat();
+        const altitudeBefore = transform.getCameraAltitude();
+        const terrain = createDEMTerrain([new OverscaledTileID(0, 0, 0, 0, 0)], createDEM(() => 1000));
+
+        transform.recalculateZoomAndCenter(terrain);
+
+        expect(transform.elevation).toBe(1000);
+        expect(transform.getCameraLngLat().lat).toBeCloseTo(cameraBefore.lat, 8);
+        expect(transform.getCameraLngLat().lng).toBeCloseTo(cameraBefore.lng, 8);
+        expect(transform.getCameraAltitude()).toBeCloseTo(altitudeBefore, 6);
+    });
+
+    test('recalculateZoomAndCenter keeps the camera where it is at an extreme latitude', () => {
+        const transform = new MercatorTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 85, renderWorldCopies: true});
+        transform.resize(512, 512);
+        transform.setCenter(new LngLat(-150, 80));
+        transform.setZoom(10);
+        transform.setPitch(70);
+        transform.setBearing(135);
+        const cameraBefore = transform.getCameraLngLat();
+        const altitudeBefore = transform.getCameraAltitude();
+        const terrain = createDEMTerrain([new OverscaledTileID(0, 0, 0, 0, 0)], createDEM(() => 2500));
+
+        transform.recalculateZoomAndCenter(terrain);
+
+        expect(transform.elevation).toBe(2500);
+        expect(transform.getCameraLngLat().lat).toBeCloseTo(cameraBefore.lat, 8);
+        expect(transform.getCameraLngLat().lng).toBeCloseTo(cameraBefore.lng, 8);
+        expect(transform.getCameraAltitude()).toBeCloseTo(altitudeBefore, 6);
+    });
+
+    test('recalculateZoomAndCenter leaves the center where it is while the terrain under it is above the camera', () => {
+        const transform = createMercatorTransform(new LngLat(0, 0), 15, 60);
+        const terrain = createDEMTerrain([new OverscaledTileID(0, 0, 0, 0, 0)], createDEM(() => 5000));
+
+        transform.recalculateZoomAndCenter(terrain);
+
+        expect(transform.zoom).toBe(15);
+        expect(transform.center).toEqual(new LngLat(0, 0));
+        expect(transform.elevation).toBe(0);
+    });
+
+    test('recalculateZoomAndCenter looking up at terrain above the camera puts the center on it', () => {
+        const transform = new MercatorTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 150, renderWorldCopies: true});
+        transform.resize(512, 512);
+        transform.setCenter(new LngLat(0, 0));
+        transform.setZoom(15);
+        transform.setPitch(120);
+        transform.setElevation(3000);
+        const terrain = createDEMTerrain([new OverscaledTileID(0, 0, 0, 0, 0)], createDEM(() => 2500));
+
+        transform.recalculateZoomAndCenter(terrain);
+
+        expect(transform.elevation).toBe(2500);
+        expect(transform.zoom).toBeCloseTo(16.1383, 4);
     });
 
     test('recalculateZoomAndCenterNoTerrain', () => {
@@ -467,12 +617,11 @@ describe('transform', () => {
         transform.recalculateZoomAndCenter();
         expect(transform.elevation).toBeCloseTo(0, 10);
         expect(transform.center.lng).toBeCloseTo(10, 10);
-        expect(transform.center.lat).toBeCloseTo(50.00179860708241, 10);
+        expect(transform.center.lat).toBeCloseTo(50.00179923503546, 10);
         expect(transform.getCameraLngLat().lng).toBeCloseTo(expectedCamLngLat.lng, 10);
-        // Latitude precision is lower as a compromise to a stable recalculateZoomAndCenter at extreme latitudes
-        expect(transform.getCameraLngLat().lat).toBeCloseTo(expectedCamLngLat.lat, 5);
+        expect(transform.getCameraLngLat().lat).toBeCloseTo(expectedCamLngLat.lat, 10);
         expect(transform.getCameraAltitude()).toBeCloseTo(expectedAltitude, 10);
-        expect(transform.zoom).toBeCloseTo(13.836362970131438, 10);
+        expect(transform.zoom).toBeCloseTo(13.836362951286565, 10);
     });
 
     test('screenPointToMercatorCoordinate with terrain that covers nothing should fall back to 2D', () => {
@@ -868,6 +1017,19 @@ describe('MercatorTransform.screenTerrainPointToMercatorCoordinate', () => {
         }
     });
 
+    test('hits the terrain between the near clipping plane and twice its distance from the camera', () => {
+        const height = 449;
+        const terrain = createDEMTerrain([new OverscaledTileID(0, 0, 0, 0, 0)], createDEM(() => height));
+        const transform = createMercatorTransform(new LngLat(0, 0), 16, 60);
+        const center = new Point(256, 256);
+
+        const result = transform.screenTerrainPointToMercatorCoordinate(center, terrain);
+
+        expect(result).not.toBeNull();
+        expect(result.z).toBeCloseTo(height, 6);
+        expectWorldPixelsClose(result, transform.screenPointToMercatorCoordinateAtZ(center, height), transform.worldSize);
+    });
+
     test('applies the terrain exaggeration to the hit elevation', () => {
         const height = 300;
         const terrain = createDEMTerrain([new OverscaledTileID(0, 0, 0, 0, 0)], createDEM(() => height), 2.5);
@@ -1014,18 +1176,18 @@ describe('MercatorTransform.screenTerrainPointToMercatorCoordinate', () => {
 
 });
 
-// Outputs captured from commit 407a8ce9e, before lng/lat math was routed through the world coordinate helper.
-// Each row is 11 inputs followed by 9 outputs; the comparison is exact so the refactor cannot change a bit.
+// Outputs captured from upstream commit 2a4c3728b, where lng/lat math is not routed through the world coordinate helper.
+// Each row is 11 inputs followed by 9 outputs; the comparison is exact so the helper cannot change a bit on mercator.
 // Remove once the planar CRS series (#168) has landed: it guards the refactor, not a behavior.
 const bitIdentityRows: number[][] = [
-    [-47.66947732307017, -31.891872510313988, 12.335080658085644, 44.56127839162946, 336.473432360217, 2708.1988365389407, 633.7583729997277, 333.5038125514984, -48.08538376772776, -32.09453024622053, 6542.761099524796, 0.06608625848037492, -47.635173521078315, -0.07879338518436896, -48.10138014914466, -32.06339765398657, 2708.1988365389407, 13.435703555287978, -47.63887852731972, 0.006589276563389035],
-    [29.529827423393726, -44.010491259396076, 4.350916175171733, 40.40351155679673, 295.4289326816797, 742.9703597445041, 119.00203712284565, 341.0222121980041, 30.327826311811805, -44.438611211720854, 11584.925448521972, 0.0002609985923233138, 47.682901433135356, -8.598491341610824, 30.222915348529853, -44.402985754807105, 742.9703597445041, 11.785820788692991, 27.14136282768186, -9.145886234506918],
-    [-175.4359111469239, -60.00771701335907, 11.576151768676937, 56.23234930448234, 272.34073103405535, 2335.907760076225, 152.67861243337393, 567.1612800098956, -174.8650802965276, -59.31432515755296, 16009.216147474945, 0.039052676546020515, -175.26376370720283, -0.007036734336963946, -175.22507664128196, -59.30681470736939, 2335.907760076225, 10.511814234993162, -175.36093089187702, -0.042540721064781906],
-    [-144.41486184485257, 7.587629780173302, 19.653839827515185, 37.38076251000166, 167.28623329661787, 1020.5210256390274, 658.2415254786611, 348.03880993276834, -144.6090480950661, 8.191629043780267, 13963.913300074637, 10.550601155815519, -144.4149643458768, 0.0004543238948713224, -144.5892778507015, 8.104884388547887, 1020.5210256390274, 12.06229126031695, -144.41507905283308, 1.7517999424399022e-06],
-    [-89.8710085451603, 64.21592768281698, 1.8496395740658045, 48.10014402028173, 158.33662692457438, 657.6341448817402, 48.85685257613659, 331.04150402359664, -90.20058967545629, 64.65715769259259, 19041.576908901334, 4.609766002574671e-05, -138.11462647842262, 76.308455124853, -90.04266543186203, 64.48644307922879, 657.6341448817402, 10.104601204958453, -31.785299776317714, 30.85807805159577]
+    [-47.66947732307017, -31.891872510313988, 12.335080658085644, 44.56127839162946, 336.473432360217, 2708.1988365389407, 633.7583729997277, 333.5038125514984, -48.08538376772776, -32.09453024622053, 6542.761099524796, 0.06608625848037492, -47.635173521078315, -0.07879338518436896, -48.10138014914466, -32.06339765398657, 2708.1988365389407, 13.435703555287997, -47.63887852731972, 0.006589276563389035],
+    [29.529827423393726, -44.010491259396076, 4.350916175171733, 40.40351155679673, 295.4289326816797, 742.9703597445041, 119.00203712284565, 341.0222121980041, 30.327826311811805, -44.438611211720854, 11584.925448521972, 0.0002609985923233138, 47.682901433135356, -8.598491341610824, 30.222915348529853, -44.402985754807105, 742.9703597445041, 11.78582078869319, 27.14136282768186, -9.145886234506918],
+    [-175.4359111469239, -60.00771701335907, 11.576151768676937, 56.23234930448234, 272.34073103405535, 2335.907760076225, 152.67861243337393, 567.1612800098956, -174.8650802965276, -59.31432515755296, 16009.216147474945, 0.039052676546020515, -175.26376370720283, -0.007036734336963946, -175.22507664128196, -59.30681470736939, 2335.907760076225, 10.511814234993166, -175.36093089187702, -0.042540721064781906],
+    [-144.41486184485257, 7.587629780173302, 19.653839827515185, 37.38076251000166, 167.28623329661787, 1020.5210256390274, 658.2415254786611, 348.03880993276834, -144.6090480950661, 8.191629043780267, 13963.913300074637, 10.550601155815519, -144.4149643458768, 0.0004543238948713224, -144.5892778507015, 8.104884388547887, 1020.5210256390274, 12.062291260316952, -144.41507905283308, 1.7517999424399022e-06],
+    [-89.8710085451603, 64.21592768281698, 1.8496395740658045, 48.10014402028173, 158.33662692457438, 657.6341448817402, 48.85685257613659, 331.04150402359664, -90.20058967545629, 64.65715769259259, 19041.576908901334, 4.609766002574671e-05, -138.11462647842262, 76.308455124853, -90.04266543186203, 64.48644307922882, 657.6341448817402, 10.104601204958538, -31.785299776317714, 30.85807805159577]
 ];
 
-describe('mercator transform bit identity with the pre-refactor transform', () => {
+describe('mercator transform bit identity with upstream main', () => {
     test.each(bitIdentityRows)('center %f,%f zoom %f pitch %f bearing %f', (lng, lat, zoom, pitch, bearing, elevation, px, py, camLng, camLat, alt, ...expected) => {
         const transform = new MercatorTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 60, renderWorldCopies: true});
         transform.resize(800, 600);
@@ -1247,6 +1409,15 @@ describe('MercatorTransform.isLocationOccluded', () => {
         const elevationAboveRidge = 3500;
 
         expect(transform.isLocationOccluded(behindRidge, terrain, elevationAboveRidge)).toBe(false);
+    });
+
+    test('a location on the terrain nearer than twice the near clipping plane\'s distance is in view', () => {
+        const height = 449;
+        const terrain = createDEMTerrain([new OverscaledTileID(0, 0, 0, 0, 0)], createDEM(() => height));
+        const transform = createMercatorTransform(new LngLat(0, 0), 16, 60);
+        const drawnAtTheScreenCenter = transform.screenPointToMercatorCoordinateAtZ(new Point(256, 256), height).toLngLat();
+
+        expect(transform.isLocationOccluded(drawnAtTheScreenCenter, terrain)).toBe(false);
     });
 
     test('a location behind the camera or beyond the far plane is hidden', () => {
