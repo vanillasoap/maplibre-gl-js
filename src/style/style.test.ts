@@ -17,7 +17,7 @@ import {StubMap, sleep, waitForEvent} from '../util/test/util.ts';
 import {setNow, restoreNow} from '../util/time_control.ts';
 import {RTLPluginLoadedEventName} from '../source/rtl_text_plugin_status.ts';
 import {MessageType} from '../util/actor_messages.ts';
-import {MercatorTransform} from '../geo/projection/mercator_transform.ts';
+import {type MercatorTransform, createMercatorTransform} from '../geo/projection/mercator_transform.ts';
 
 import type {PossiblyEvaluated} from './properties.ts';
 import type {SymbolLayoutProps, SymbolLayoutPropsPossiblyEvaluated} from './style_layer/symbol_style_layer_properties.g.ts';
@@ -240,7 +240,7 @@ describe('Style.loadJSON', () => {
     });
 
     test('loads a style whose filter mixes legacy and expression syntax, warning instead of blanking the map', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
         const errorSpy = vi.fn();
         style.on('error', errorSpy);
@@ -474,7 +474,7 @@ describe('Style.loadJSON', () => {
 
     test('sets terrain if defined', async () => {
         const map = getStubMap();
-        const style = createStyle(map);
+        const style = new Style(map);
         map.setTerrain = vi.fn();
         style.loadJSON(createStyleJSON({
             sources: {'source-id': createGeoJSONSource()},
@@ -521,7 +521,7 @@ describe('Style.loadJSON', () => {
             }]
         });
 
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(createStyleJSON(), {
             transformStyle: (prevStyle, nextStyle) => ({
                 ...nextStyle,
@@ -544,7 +544,7 @@ describe('Style.loadJSON', () => {
     });
 
     test('propagates global state object to layers', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(
             createStyleJSON({
                 sources: {
@@ -575,7 +575,7 @@ describe('Style.loadJSON', () => {
     });
 
     test('propagates global state object to layers added after loading style', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(
             createStyleJSON({
                 sources: {
@@ -741,11 +741,23 @@ describe('Style._load', () => {
         expect(style.projection.name).toBe('mercator');
         expect(style.serialize().projection).toBeUndefined();
     });
+
+    test('evaluates a projection from the global state without a warning', () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const style = new Style(getStubMap());
+        const styleSpec = createStyleJSON({
+            state: {projectionType: {default: 'vertical-perspective'}},
+            projection: {type: ['global-state', 'projectionType']}
+        });
+
+        style._load(styleSpec, {validate: false});
+        expect(warn).not.toHaveBeenCalled();
+    });
 });
 
 describe('Style._remove', () => {
     test('removes cache sources and clears their tiles', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(createStyleJSON({
             sources: {'source-id': createGeoJSONSource()}
         }));
@@ -1139,7 +1151,7 @@ describe('Style.setState', () => {
             }
         });
 
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(initialState);
         await style.once('style.load');
         const didChange = style.setState(nextState);
@@ -1174,7 +1186,7 @@ describe('Style.setState', () => {
             }
         });
 
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(initialState);
 
         await style.once('style.load');
@@ -1209,7 +1221,7 @@ describe('Style.setState', () => {
         });
 
         const nextState = createStyleJSON();
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(initialState);
 
         await style.once('style.load');
@@ -1360,12 +1372,12 @@ describe('Style.addSource', () => {
 
 describe('Style.removeSource', () => {
     test('throw before loaded', () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         expect(() => style.removeSource('source-id')).toThrow(/load/i);
     });
 
     test('fires "data" event', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(createStyleJSON());
         const source = createSource();
         const dataPromise = style.once('data');
@@ -1378,7 +1390,7 @@ describe('Style.removeSource', () => {
     });
 
     test('clears tiles', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(createStyleJSON({
             sources: {'source-id': createGeoJSONSource()}
         }));
@@ -1391,7 +1403,7 @@ describe('Style.removeSource', () => {
     });
 
     test('throws on non-existence', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(createStyleJSON());
         await style.once('style.load');
         expect(() => {
@@ -1400,7 +1412,7 @@ describe('Style.removeSource', () => {
     });
 
     async function createStyleAndLoad(): Promise<Style> {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(createStyleJSON({
             'sources': {
                 'mapLibre-source': createGeoJSONSource()
@@ -1435,7 +1447,7 @@ describe('Style.removeSource', () => {
     });
 
     test('tears down source event forwarding', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(createStyleJSON());
         const source = createSource();
 
@@ -1879,6 +1891,7 @@ describe('Style.setGlobalState', () => {
         const style = new Style(getStubMap());
         expect(() => style.setGlobalState({})).toThrow(/load/i);
     });
+
     test('sets global state', async () => {
         const style = new Style(getStubMap());
         style.loadJSON(createStyleJSON());
@@ -1888,7 +1901,7 @@ describe('Style.setGlobalState', () => {
     });
 
     test('reloads sources when state property is used in filter property', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(createStyleJSON({
             sources: {
                 'circle-source-id': createGeoJSONSource(),
@@ -1924,7 +1937,7 @@ describe('Style.setGlobalState', () => {
     });
 
     test('reloads sources when state property is used in layout property', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(createStyleJSON({
             sources: {
                 'line-source-id': createGeoJSONSource()
@@ -1950,7 +1963,7 @@ describe('Style.setGlobalState', () => {
     });
 
     test('reloads sources when a new state property is used in a paint property that affects layout', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(createStyleJSON({
             sources: {
                 'circle-source-id': createGeoJSONSource(),
@@ -1979,7 +1992,7 @@ describe('Style.setGlobalState', () => {
     });
 
     test('does not reload sources when state property is set to the same value as current one', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(createStyleJSON({
             state: {
                 'showCircles': {
@@ -2010,7 +2023,7 @@ describe('Style.setGlobalState', () => {
     });
 
     test('does not reload sources when new state property is used in paint property', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(createStyleJSON({
             sources: {
                 'circle-source-id': createGeoJSONSource(),
@@ -2039,7 +2052,7 @@ describe('Style.setGlobalState', () => {
     });
 
     test('does not reload sources when a new state property is used in a paint property while state property used in filter is unchanged', async() => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(createStyleJSON({
             sources: {
                 'circle-source-id': createGeoJSONSource()
@@ -2068,7 +2081,7 @@ describe('Style.setGlobalState', () => {
     });
 
     test('does not reload sources when new state property is used in paint property while state property used in layout is unchanged', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(createStyleJSON({
             sources: {
                 'line-source-id': createGeoJSONSource()
@@ -2227,7 +2240,7 @@ describe('Style.setGlobalStateProperty', () => {
     });
 
     test('reloads sources when state property is used in filter property', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(createStyleJSON({
             sources: {
                 'circle-1-source-id': createGeoJSONSource(),
@@ -2280,7 +2293,7 @@ describe('Style.setGlobalStateProperty', () => {
     });
 
     test('reloads sources when state property is used in layout property', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(createStyleJSON({
             sources: {
                 'line-1-source-id': createGeoJSONSource(),
@@ -2337,7 +2350,7 @@ describe('Style.setGlobalStateProperty', () => {
     });
 
     test('reloads sources when state property is used in a paint property that affects layout', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(createStyleJSON({
             sources: {
                 'circle-source-id': createGeoJSONSource()
@@ -2365,7 +2378,7 @@ describe('Style.setGlobalStateProperty', () => {
     });
 
     test('reloads sources when state property is used in visibility', async() => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(createStyleJSON({
             sources: {
                 'circle-source-id': createGeoJSONSource()
@@ -2393,7 +2406,7 @@ describe('Style.setGlobalStateProperty', () => {
     });
 
     test('does not reload sources when state property is set to the same value as current one', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(createStyleJSON({
             state: {
                 'showCircle': {
@@ -2425,7 +2438,7 @@ describe('Style.setGlobalStateProperty', () => {
     });
 
     test('does not reload sources when state property is only used in paint properties', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(createStyleJSON({
             sources: {
                 'circle-source-id': createGeoJSONSource()
@@ -2453,7 +2466,7 @@ describe('Style.setGlobalStateProperty', () => {
     });
 
     test('does not reload sources when state property is used in paint property while a different state property used in filter is unchanged', async() => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(createStyleJSON({
             sources: {
                 'circle-source-id': createGeoJSONSource()
@@ -2482,7 +2495,7 @@ describe('Style.setGlobalStateProperty', () => {
     });
 
     test('does not reload sources when state property is used in paint property while a different state property used in layout is unchanged', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(createStyleJSON({
             sources: {
                 'line-source-id': createGeoJSONSource()
@@ -2599,7 +2612,7 @@ describe('Style.addLayer', () => {
     });
 
     test('#4040 does not mutate source property when provided inline', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(createStyleJSON());
         await style.once('style.load');
         const source = {
@@ -2794,7 +2807,7 @@ describe('Style.addLayer', () => {
     });
 
     test('fires an error on non-existent source layer', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(extend(createStyleJSON(), {
             sources: {
                 dummy: {
@@ -2997,7 +3010,7 @@ describe('Style.moveLayer', () => {
 
 describe('Style.setPaintProperty', () => {
     test('#4738 postpones source reload until layers have been broadcast to workers', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON(extend(createStyleJSON(), {
             'sources': {
                 'geojson': {
@@ -3014,7 +3027,7 @@ describe('Style.setPaintProperty', () => {
             ]
         }));
 
-        const tr = new MercatorTransform();
+        const tr = createMercatorTransform();
         tr.resize(512, 512);
 
         await style.once('style.load');
@@ -3120,7 +3133,7 @@ describe('Style.getPaintProperty', () => {
 
 describe('Style.setLayoutProperty', () => {
     test('#5802 clones the input', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON({
             'version': 8,
             'sources': {
@@ -3156,7 +3169,7 @@ describe('Style.setLayoutProperty', () => {
     });
 
     test('respects validate option', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON({
             'version': 8,
             'sources': {
@@ -3195,7 +3208,7 @@ describe('Style.setLayoutProperty', () => {
 
 describe('Style.getLayoutProperty', () => {
     test('#5802 clones the output', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON({
             'version': 8,
             'sources': {
@@ -3235,9 +3248,7 @@ describe('Style.setFilter', () => {
     });
 
     function createStyle() {
-        const map = getStubMap();
-        const style = new Style(map);
-        map.style = style;
+        const style = new Style(getStubMap());
         style.loadJSON({
             version: 8,
             sources: {
@@ -3365,14 +3376,12 @@ describe('Style.setFilter', () => {
 
 describe('Style.setLayerZoomRange', () => {
     test('throw before loaded', () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         expect(() => style.setLayerZoomRange('symbol', 5, 12)).toThrow(/load/i);
     });
 
     function createStyle() {
-        const map = getStubMap();
-        const style = new Style(map);
-        map.style = style;
+        const style = new Style(getStubMap());
         style.loadJSON({
             'version': 8,
             'sources': {
@@ -3411,7 +3420,7 @@ describe('Style.setLayerZoomRange', () => {
     });
 
     test('does not reload raster source', async () => {
-        const style = createStyle();
+        const style = new Style(getStubMap());
         style.loadJSON({
             'version': 8,
             'sources': {
@@ -3470,8 +3479,8 @@ describe('Style.queryRenderedFeatures', () => {
     let transform: MercatorTransform;
 
     beforeEach(() => new Promise<void>(callback => {
-        style = createStyle();
-        transform = new MercatorTransform();
+        style = new Style(getStubMap());
+        transform = createMercatorTransform();
         transform.resize(512, 512);
         function queryMapLibreFeatures(layers, serializedLayers, getFeatureState, queryGeom, cameraQueryGeom, scale, params) {
             const features = {
@@ -3713,9 +3722,9 @@ describe('Style.query*Features', () => {
     let transform;
 
     beforeEach(() => new Promise<void>(callback => {
-        transform = new MercatorTransform();
+        transform = createMercatorTransform();
         transform.resize(100, 100);
-        style = createStyle();
+        style = new Style(getStubMap());
         style.loadJSON({
             'version': 8,
             'sources': {

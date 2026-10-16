@@ -1,6 +1,6 @@
 import {describe, beforeEach, afterEach, test, expect, vi} from 'vitest';
 import {MercatorProjection} from '../geo/projection/mercator_projection.ts';
-import {CrsWorldCoordinateHelper, simpleCrs} from '../geo/projection/crs.ts';
+import {CRSWorldCoordinateHelper, identityCrs} from '../geo/projection/crs.ts';
 import {fakeServer, type FakeServer} from 'nise';
 import {VectorTileSource} from './vector_tile_source.ts';
 import {AJAXError} from '../util/ajax.ts';
@@ -164,33 +164,6 @@ describe('VectorTileSource', () => {
             attribution: 'MapLibre',
             tiles: ['http://example.com/{z}/{x}/{y}.png']
         });
-    });
-
-    test('uses native CRS bounds for vector tiles and their overzoom parent', async () => {
-        const source = createSource({maxzoom: 1, tiles: ['http://example.com/tiles?bbox={bbox}']}, async (url) => ({
-            url,
-            headers: {'X-Tile-Request': 'native'}
-        }));
-        source.map.style.projection = new MercatorProjection(new CrsWorldCoordinateHelper(simpleCrs));
-        source.map._zoomLevelsToOverscale = 1;
-        let parameters: WorkerTileParameters;
-        source.dispatcher = getWrapDispatcher()({
-            sendAsync(message) {
-                parameters = message.data as WorkerTileParameters;
-                return Promise.resolve({});
-            }
-        });
-        await waitForMetadataEvent(source);
-
-        await source.loadTile({
-            tileID: new OverscaledTileID(2, 0, 2, 1, 0),
-            loadVectorData() {}
-        } as unknown as Tile);
-
-        expect(parameters.request.url).toBe('http://example.com/tiles?bbox=-45,45,0,90');
-        expect(parameters.request.headers['X-Tile-Request']).toBe('native');
-        expect(parameters.overzoomParameters.overzoomRequest.url).toBe('http://example.com/tiles?bbox=-90,0,0,90');
-        expect(parameters.overzoomParameters.overzoomRequest.headers['X-Tile-Request']).toBe('native');
     });
 
     function testScheme(scheme, expectedURL) {
@@ -414,15 +387,51 @@ describe('VectorTileSource', () => {
         source.onAdd({
             _getMapId: () => 1,
             _requestManager: new RequestManager(),
-            style: {projection: new MercatorProjection(new CrsWorldCoordinateHelper(simpleCrs))}
+            style: {projection: new MercatorProjection(new CRSWorldCoordinateHelper(identityCrs))}
         } as any as Map);
 
         await waitForMetadataEvent(source);
-        const lastRowInsideLat45To80InTheSimpleCrs = 1;
+        const lastRowInsideLat45To80InTheIdentityCrs = 1;
         const firstRowOnlyMercatorWouldInclude = 2;
 
-        expect(source.hasTile(new OverscaledTileID(3, 0, 3, 4, lastRowInsideLat45To80InTheSimpleCrs))).toBeTruthy();
+        expect(source.hasTile(new OverscaledTileID(3, 0, 3, 4, lastRowInsideLat45To80InTheIdentityCrs))).toBeTruthy();
         expect(source.hasTile(new OverscaledTileID(3, 0, 3, 4, firstRowOnlyMercatorWouldInclude))).toBeFalsy();
+    });
+
+    test('expands {bbox} in the map projection\'s tile grid', async () => {
+        const source = new VectorTileSource('id', {
+            type: 'vector',
+            minzoom: 0,
+            maxzoom: 22,
+            tiles: ['http://example.com/?bbox={bbox}']
+        }, getMockDispatcher(), undefined);
+        source.onAdd({
+            transform: {showCollisionBoxes: false},
+            _getMapId: () => 1,
+            _requestManager: new RequestManager(),
+            style: {projection: new MercatorProjection(new CRSWorldCoordinateHelper(identityCrs))},
+            getGlobalState: () => ({}),
+            getPixelRatio() { return 1; },
+        } as any as Map);
+        let receivedMessage: ActorMessage<MessageType> = null;
+        source.dispatcher = getWrapDispatcher()({
+            sendAsync(message) {
+                receivedMessage = message;
+                return Promise.resolve({});
+            }
+        });
+        await waitForMetadataEvent(source);
+
+        const tile = {
+            tileID: new OverscaledTileID(1, 0, 1, 1, 0),
+            state: 'loading',
+            loadVectorData() {},
+            setExpiryData() {}
+        } as any as Tile;
+        await source.loadTile(tile);
+
+        const northEastQuarterOfTheIdentityGrid = 'http://example.com/?bbox=0,0,90,90';
+        expect((receivedMessage.data as WorkerTileParameters).request.url).toBe(northEastQuarterOfTheIdentityGrid);
     });
 
     test('respects TileJSON.bounds when loaded from TileJSON', async () => {

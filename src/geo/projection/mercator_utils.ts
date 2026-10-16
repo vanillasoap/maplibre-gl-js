@@ -136,63 +136,116 @@ export function cameraDirectionFromPitchBearing(pitch: number, bearing: number):
     return {x, y, z};
 }
 
-/** A rectangle in the output coordinates of a projection. */
-type ProjectedBox = {minX: number; minY: number; maxX: number; maxY: number};
+/**
+ * The number of steps a lng/lat box is cut into along each axis by {@link lngLatBoxToWorldSamples}.
+ */
+const BOX_SAMPLE_STEPS = 16;
 
 /**
- * Approximates the bounds of a smoothly projected rectangle by subdividing its edges. Each segment is split until its
- * midpoint deviates from the chord by at most `tolerance`, with at least eight segments per edge.
- * Twice the remaining midpoint error pads each segment for unresolved curvature between samples.
- * The depth limit bounds work near projection singularities.
+ * Projects a lng/lat box into the world square as a grid of points, {@link BOX_SAMPLE_STEPS} + 1 on a side,
+ * edges and corners included. The corners alone miss most of a box whose edges curve, as a parallel does
+ * around a pole, and the inside of the box matters where the projection runs off to infinity, as transverse
+ * mercator does on the equator 90 degrees from its central meridian.
+ * `bulge` is the farthest an edge strays from the line between two neighboring points, measured halfway
+ * between them, which bounds how far an edge reaches past the points. It is 0 where every edge projects to
+ * a straight line, as in mercator.
  */
-function projectBoxEdges(project: (x: number, y: number) => {x: number; y: number}, minX: number, minY: number, maxX: number, maxY: number, tolerance: number, curved: boolean): ProjectedBox {
-    const corners: Array<[number, number]> = [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY]];
-    const projected = corners.map(([x, y]) => project(x, y));
-    const box = {
-        minX: Math.min(...projected.map(p => p.x)),
-        minY: Math.min(...projected.map(p => p.y)),
-        maxX: Math.max(...projected.map(p => p.x)),
-        maxY: Math.max(...projected.map(p => p.y)),
+export function lngLatBoxToWorldSamples(worldCoordinateHelper: WorldCoordinateHelper, west: number, south: number, east: number, north: number): {points: Point[]; bulge: number} {
+    const toPoint = (lng: number, lat: number) => {
+        const {x, y} = worldCoordinateHelper.worldFromLngLat(lng, lat);
+        return new Point(x, y);
     };
-    if (!curved) return box;
-
-    function sampleEdge(ax: number, ay: number, bx: number, by: number, a: {x: number; y: number}, b: {x: number; y: number}, depth: number): void {
-        const mx = (ax + bx) / 2;
-        const my = (ay + by) / 2;
-        const midpoint = project(mx, my);
-        const errorX = Math.abs(midpoint.x - (a.x + b.x) / 2);
-        const errorY = Math.abs(midpoint.y - (a.y + b.y) / 2);
-        if (depth < 12 && (depth < 3 || Math.max(errorX, errorY) > tolerance)) {
-            sampleEdge(ax, ay, mx, my, a, midpoint, depth + 1);
-            sampleEdge(mx, my, bx, by, midpoint, b, depth + 1);
-            return;
+    const lngAt = (step: number) => step === BOX_SAMPLE_STEPS ? east : west + (east - west) * step / BOX_SAMPLE_STEPS;
+    const latAt = (step: number) => step === BOX_SAMPLE_STEPS ? south : north + (south - north) * step / BOX_SAMPLE_STEPS;
+    const points: Point[] = [];
+    for (let row = 0; row <= BOX_SAMPLE_STEPS; row++) {
+        for (let column = 0; column <= BOX_SAMPLE_STEPS; column++) {
+            points.push(toPoint(lngAt(column), latAt(row)));
         }
-        box.minX = Math.min(box.minX, a.x - 2 * errorX, midpoint.x - 2 * errorX, b.x - 2 * errorX);
-        box.minY = Math.min(box.minY, a.y - 2 * errorY, midpoint.y - 2 * errorY, b.y - 2 * errorY);
-        box.maxX = Math.max(box.maxX, a.x + 2 * errorX, midpoint.x + 2 * errorX, b.x + 2 * errorX);
-        box.maxY = Math.max(box.maxY, a.y + 2 * errorY, midpoint.y + 2 * errorY, b.y + 2 * errorY);
     }
-
-    for (let i = 0; i < 4; i++) {
-        const next = (i + 1) % 4;
-        sampleEdge(...corners[i], ...corners[next], projected[i], projected[next], 0);
+    const pointAt = (row: number, column: number) => points[row * (BOX_SAMPLE_STEPS + 1) + column];
+    let bulge = 0;
+    for (let step = 0; step < BOX_SAMPLE_STEPS; step++) {
+        const lngHalfway = (lngAt(step) + lngAt(step + 1)) / 2;
+        const latHalfway = (latAt(step) + latAt(step + 1)) / 2;
+        const edges: Array<[Point, Point, Point]> = [
+            [pointAt(0, step), pointAt(0, step + 1), toPoint(lngHalfway, north)],
+            [pointAt(BOX_SAMPLE_STEPS, step), pointAt(BOX_SAMPLE_STEPS, step + 1), toPoint(lngHalfway, south)],
+            [pointAt(step, 0), pointAt(step + 1, 0), toPoint(west, latHalfway)],
+            [pointAt(step, BOX_SAMPLE_STEPS), pointAt(step + 1, BOX_SAMPLE_STEPS), toPoint(east, latHalfway)],
+        ];
+        for (const [start, end, halfway] of edges) {
+            const chord = end.sub(start);
+            const toHalfway = halfway.sub(start);
+            const chordLength = chord.mag();
+            const distance = chordLength > 0 ? Math.abs(chord.x * toHalfway.y - chord.y * toHalfway.x) / chordLength : toHalfway.mag();
+            if (distance > bulge) bulge = distance;
+        }
     }
-    return box;
+    return {points, bulge};
 }
 
 /**
- * Projects a lng/lat box into world coordinates, sampling curved CRS edges to include their extrema.
- * Mercator's axis-aligned edges need only their corners.
+ * Projects a lng/lat box into the world square and returns the axis-aligned rectangle that contains it:
+ * the rectangle around {@link lngLatBoxToWorldSamples}, grown by their bulge. In mercator that is exactly
+ * the rectangle of the projected corners.
  */
-export function lngLatBoxToWorldBox(worldCoordinateHelper: WorldCoordinateHelper, west: number, south: number, east: number, north: number): ProjectedBox {
-    return projectBoxEdges((lng, lat) => worldCoordinateHelper.worldFromLngLat(lng, lat), west, south, east, north, 1e-7, !worldCoordinateHelper.wraps);
+export function lngLatBoxToWorldBox(worldCoordinateHelper: WorldCoordinateHelper, west: number, south: number, east: number, north: number): {minX: number; minY: number; maxX: number; maxY: number} {
+    const {points, bulge} = lngLatBoxToWorldSamples(worldCoordinateHelper, west, south, east, north);
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const {x, y} of points) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+    }
+    return {minX: minX - bulge, minY: minY - bulge, maxX: maxX + bulge, maxY: maxY + bulge};
 }
 
-/** Maps a world rectangle back to lng/lat, including extrema along curved CRS edges. */
+/**
+ * Maps the four corners of a world rectangle back to lng/lat and returns the box that contains them.
+ * That is exact in mercator. Where `x` and `y` both depend on `lng` and `lat` it can miss a curved edge
+ * or a pole inside the rectangle; its one caller is the GeoJSON reload check, which a GeoJSON source skips
+ * in a registered projection by reloading every tile on a diff.
+ */
 export function worldBoxToLngLatBox(worldCoordinateHelper: WorldCoordinateHelper, minX: number, minY: number, maxX: number, maxY: number): {west: number; south: number; east: number; north: number} {
-    const box = projectBoxEdges((x, y) => {
-        const {lng, lat} = worldCoordinateHelper.lngLatFromWorld(x, y);
-        return {x: lng, y: lat};
-    }, minX, minY, maxX, maxY, 1e-5, !worldCoordinateHelper.wraps);
-    return {west: box.minX, south: clamp(box.minY, -90, 90), east: box.maxX, north: clamp(box.maxY, -90, 90)};
+    const corners = [
+        worldCoordinateHelper.lngLatFromWorld(minX, minY),
+        worldCoordinateHelper.lngLatFromWorld(maxX, minY),
+        worldCoordinateHelper.lngLatFromWorld(maxX, maxY),
+        worldCoordinateHelper.lngLatFromWorld(minX, maxY),
+    ];
+    return {
+        west: Math.min(corners[0].lng, corners[1].lng, corners[2].lng, corners[3].lng),
+        south: Math.min(corners[0].lat, corners[1].lat, corners[2].lat, corners[3].lat),
+        east: Math.max(corners[0].lng, corners[1].lng, corners[2].lng, corners[3].lng),
+        north: Math.max(corners[0].lat, corners[1].lat, corners[2].lat, corners[3].lat),
+    };
+}
+
+/**
+ * The step in degrees over which {@link degreesPerWorldUnit} measures the size of a degree.
+ */
+const DEGREE_STEP = 1e-4;
+
+/**
+ * Returns how many degrees one world unit spans at a location. A world that wraps is 360 degrees wide.
+ * Any other world is measured at the location along longitude and along latitude, and the direction
+ * with the fewest degrees counts.
+ */
+export function degreesPerWorldUnit(worldCoordinateHelper: WorldCoordinateHelper, lngLat: LngLat): number {
+    if (worldCoordinateHelper.wraps) return 360;
+
+    const latStep = lngLat.lat > 0 ? -DEGREE_STEP : DEGREE_STEP;
+    const world = worldCoordinateHelper.worldFromLngLat(lngLat.lng, lngLat.lat);
+    const alongLng = worldCoordinateHelper.worldFromLngLat(lngLat.lng + DEGREE_STEP, lngLat.lat);
+    const alongLat = worldCoordinateHelper.worldFromLngLat(lngLat.lng, lngLat.lat + latStep);
+    const worldUnits = Math.max(
+        Math.hypot(alongLng.x - world.x, alongLng.y - world.y),
+        Math.hypot(alongLat.x - world.x, alongLat.y - world.y)
+    );
+    return DEGREE_STEP / worldUnits;
 }

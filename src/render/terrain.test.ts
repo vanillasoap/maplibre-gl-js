@@ -9,11 +9,12 @@ import {Tile} from '../tile/tile.ts';
 import {LngLat} from '../geo/lng_lat.ts';
 import {EXTENT} from '../data/extent.ts';
 import {MAX_TILE_ZOOM, MIN_TILE_ZOOM} from '../util/util.ts';
-import {MercatorTransform} from '../geo/projection/mercator_transform.ts';
-import {GlobeTransform} from '../geo/projection/globe_transform.ts';
-import {VerticalPerspectiveTransform} from '../geo/projection/vertical_perspective_transform.ts';
+import {createMercatorTransform} from '../geo/projection/mercator_transform.ts';
+import {createGlobeTransform} from '../geo/projection/globe_transform.ts';
+import {createVerticalPerspectiveTransform} from '../geo/projection/vertical_perspective_transform.ts';
 import {createNullGL} from '../util/test/null_gl.ts';
-import {createDEM, createDEMTerrain, createPainter, createRasterDEMTileManager, createSimpleCrsTransform} from '../util/test/util.ts';
+import {createDEM, createDEMTerrain, createPainter, createRasterDEMTileManager} from '../util/test/util.ts';
+import {CRSWorldCoordinateHelper, identityCrs} from '../geo/projection/crs.ts';
 
 import type {TileManager} from '../tile/tile_manager.ts';
 import type {TerrainSpecification} from '@maplibre/maplibre-gl-style-spec';
@@ -32,7 +33,7 @@ describe('Terrain', () => {
     });
 
     function createFlatTerrain(elevation: number) {
-        const transform = new MercatorTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 85, renderWorldCopies: true});
+        const transform = createMercatorTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 85, renderWorldCopies: true});
         transform.resize(2048, 512);
         transform.setCenter(new LngLat(0, 0));
         transform.setZoom(0);
@@ -61,7 +62,7 @@ describe('Terrain', () => {
 
     test('a globe transform that renders mercator picks with the mercator raycast', () => {
         const {terrain} = createFlatTerrain(0);
-        const globeTransform = new GlobeTransform();
+        const globeTransform = createGlobeTransform();
         globeTransform.resize(2048, 512);
         globeTransform.setZoom(0);
         globeTransform.setTransitionState(0);
@@ -76,13 +77,13 @@ describe('Terrain', () => {
 
     test('a globe transform that renders the globe picks with the globe raycast', () => {
         const {terrain} = createFlatTerrain(0);
-        const globeTransform = new GlobeTransform();
+        const globeTransform = createGlobeTransform();
         globeTransform.resize(2048, 512);
         globeTransform.setZoom(1);
         const p = new Point(1100, 280);
 
         const coordinate = globeTransform.screenTerrainPointToMercatorCoordinate(p, terrain);
-        const verticalPerspective = new VerticalPerspectiveTransform();
+        const verticalPerspective = createVerticalPerspectiveTransform();
         verticalPerspective.apply(globeTransform, false);
         const expected = verticalPerspective.screenTerrainPointToMercatorCoordinate(p, terrain);
 
@@ -343,7 +344,6 @@ describe('Terrain', () => {
             context: new Context(gl),
             width: 1,
             height: 1,
-            transform: new MercatorTransform(),
             getTileTexture: () => null
         } as any as Painter;
         const tileManager = {
@@ -361,7 +361,7 @@ describe('Terrain', () => {
 
         const spy = vi.fn();
         terrain.getElevation = spy;
-        const transform = new MercatorTransform({minZoom: 3, maxZoom: 22, minPitch: 0, maxPitch: 85, renderWorldCopies: true});
+        const transform = createMercatorTransform({minZoom: 3, maxZoom: 22, minPitch: 0, maxPitch: 85, renderWorldCopies: true});
         transform.resize(200, 200);
         transform.setZoom(zoom);
         terrain.getElevationForLngLat(new LngLat(0, 0), transform);
@@ -374,7 +374,7 @@ describe('Terrain', () => {
         const demElevation = 3000;
         const dem = createDEM(() => demElevation);
         const terrain = createDEMTerrain([], dem);
-        const transform = new MercatorTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 85, renderWorldCopies: true});
+        const transform = createMercatorTransform({minZoom: 0, maxZoom: 22, minPitch: 0, maxPitch: 85, renderWorldCopies: true});
         transform.resize(800, 600);
         transform.setZoom(14.6);
         transform.setCenter(new LngLat(11.4, 47.3));
@@ -469,8 +469,8 @@ describe('Terrain', () => {
 
 describe('Terrain in a planar projection', () => {
     function createPlanarTerrain() {
-        const transform = createSimpleCrsTransform(512, 512);
-        return new Terrain(createPainter(), createRasterDEMTileManager(), {source: 'dem'}, 'auto', () => transform.worldCoordinateHelper);
+        const identityCrsWorld = new CRSWorldCoordinateHelper(identityCrs);
+        return new Terrain(createPainter(), createRasterDEMTileManager(), {source: 'dem'}, 'auto', () => identityCrsWorld);
     }
 
     test('getElevationForLngLatZoom samples tile 1/1/0 at its center for 45,45 at zoom 1', () => {
@@ -500,7 +500,7 @@ describe('Terrain in a planar projection', () => {
         expect(terrain.getMinTileElevationForLngLatZoom(new LngLat(0, 0), 0)).toBe(1);
     });
 
-    test('skirt length is a fifth of the tile width in CRS meters, 36 at zoom 0 of the 180 meter simple world and 18 at zoom 1', () => {
+    test('skirt length is a fifth of the tile width in CRS meters, 36 at zoom 0 of the 180 meter identity world and 18 at zoom 1', () => {
         const terrain = createPlanarTerrain();
 
         expect(terrain.getSkirtLength(0)).toBe(36);

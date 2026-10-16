@@ -8,15 +8,23 @@ export class TileBounds {
     bounds: LngLatBounds;
     minzoom: number;
     maxzoom: number;
-    /** `bounds` in the world square of the map's projection, cached for the most recently used projection. */
+    /** `bounds` in the world square of `_worldCoordinateHelper`. */
     private _worldBox: {minX: number; minY: number; maxX: number; maxY: number};
-
+    /** The projection `_worldBox` is in: the one given to the constructor, or to the last `contains` that differed. */
     private _worldCoordinateHelper: WorldCoordinateHelper;
 
     constructor(bounds: [number, number, number, number], minzoom: number | null | undefined, maxzoom: number | null | undefined, worldCoordinateHelper: WorldCoordinateHelper) {
         this.bounds = LngLatBounds.convert(this.validateBounds(bounds));
         this.minzoom = minzoom || 0;
         this.maxzoom = maxzoom || 24;
+        this._projectBounds(worldCoordinateHelper);
+    }
+
+    /**
+     * Projects `bounds` into the world square of a projection. Projecting a box samples it on a grid, so the result
+     * is kept until the projection changes.
+     */
+    private _projectBounds(worldCoordinateHelper: WorldCoordinateHelper): void {
         this._worldCoordinateHelper = worldCoordinateHelper;
         this._worldBox = lngLatBoxToWorldBox(worldCoordinateHelper, this.bounds.getWest(), this.bounds.getSouth(), this.bounds.getEast(), this.bounds.getNorth());
     }
@@ -27,11 +35,12 @@ export class TileBounds {
         return [Math.max(-180, bounds[0]), Math.max(-90, bounds[1]), Math.min(180, bounds[2]), Math.min(90, bounds[3])];
     }
 
+    /**
+     * Whether a tile of the grid of `worldCoordinateHelper`, the map's projection, overlaps `bounds`. A source keeps
+     * its bounds across `setProjection` because a different projection than last time projects them again.
+     */
     contains(tileID: CanonicalTileID, worldCoordinateHelper: WorldCoordinateHelper = this._worldCoordinateHelper): boolean {
-        if (worldCoordinateHelper !== this._worldCoordinateHelper) {
-            this._worldCoordinateHelper = worldCoordinateHelper;
-            this._worldBox = lngLatBoxToWorldBox(worldCoordinateHelper, this.bounds.getWest(), this.bounds.getSouth(), this.bounds.getEast(), this.bounds.getNorth());
-        }
+        if (worldCoordinateHelper !== this._worldCoordinateHelper) this._projectBounds(worldCoordinateHelper);
         const worldSize = Math.pow(2, tileID.z);
         const level = {
             minX: Math.floor(this._worldBox.minX * worldSize),

@@ -5,8 +5,8 @@ import {normalizeCenter, TransformHelper} from './transform_helper.ts';
 import {OverscaledTileID} from '../tile/tile_id.ts';
 import {createRotatedCrs, expectToBeCloseToArray} from '../util/test/util.ts';
 import {EXTENT} from '../data/extent.ts';
-import {MercatorTransform} from './projection/mercator_transform.ts';
-import {CrsWorldCoordinateHelper} from './projection/crs.ts';
+import {createMercatorTransform} from './projection/mercator_transform.ts';
+import {CRSWorldCoordinateHelper} from './projection/crs.ts';
 
 const emptyCallbacks = {
     calcMatrices: () => {},
@@ -84,7 +84,7 @@ describe('TransformHelper', () => {
 
     describe('normalizeCenter', () => {
         test('extends the target past the antimeridian when that path is shorter in a wrapping world', () => {
-            const transform = new MercatorTransform({renderWorldCopies: true});
+            const transform = createMercatorTransform({renderWorldCopies: true});
             transform.resize(200, 200);
             transform.setCenter(new LngLat(170, 0));
             const target = new LngLat(-170, 0);
@@ -93,8 +93,8 @@ describe('TransformHelper', () => {
         });
 
         test('leaves the target alone in a world that does not wrap', () => {
-            const transform = new MercatorTransform({renderWorldCopies: true});
-            transform.setWorldCoordinateHelper(new CrsWorldCoordinateHelper(createRotatedCrs()));
+            const transform = createMercatorTransform({renderWorldCopies: true});
+            transform.setWorldCoordinateHelper(new CRSWorldCoordinateHelper(createRotatedCrs()));
             transform.resize(200, 200);
             transform.setZoom(4);
             transform.setCenter(new LngLat(140, 0));

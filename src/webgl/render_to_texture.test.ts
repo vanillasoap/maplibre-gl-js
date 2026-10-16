@@ -75,10 +75,9 @@ describe('render to texture', () => {
             size
         };
     }
-    const transform = {zoom: 10, calculatePosMatrix: () => {}, getProjectionData(_a) { return {}; }, calculateFogMatrix: () => {}} as any as IReadonlyTransform;
+    const transform = {zoom: 10, calculatePosMatrix: () => {}, getProjectionData(_a) { return {}; }, calculateFogMatrix: () => {}, worldCoordinateHelper: mercatorWorldCoordinateHelper} as any as IReadonlyTransform;
     const painter = {
         context: new Context(gl),
-        transform: {worldCoordinateHelper: mercatorWorldCoordinateHelper},
         renderLayer: vi.fn(),
         acquireRTT: (size: number) => createMockRTTObject(size),
         bindRTT: vi.fn(),

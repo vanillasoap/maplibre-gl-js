@@ -1,23 +1,22 @@
 import {describe, expect, test} from 'vitest';
-import {reprojectGeoJSONFromPseudoLngLat, reprojectGeoJSONToPseudoLngLat} from './geojson_reproject.ts';
-import {CrsWorldCoordinateHelper, simpleCrs} from '../geo/projection/crs.ts';
+import {reprojectGeoJSONFromWorld, reprojectGeoJSONSourceDiffToWorld, reprojectGeoJSONToWorld} from './geojson_reproject.ts';
+import {CRSWorldCoordinateHelper, identityCrs} from '../geo/projection/crs.ts';
 
-/** lng/lat 45/45 is world (0.75, 0.25) in the simple CRS; mercator puts that world position at 90 E, this far north. */
-const pseudoLatOf45 = 66.51326044;
+import type {GeoJSONSourceDiff} from '../source/geojson_source_diff.ts';
 
-function createSimpleHelper() {
-    return new CrsWorldCoordinateHelper(simpleCrs);
+function createIdentityHelper() {
+    return new CRSWorldCoordinateHelper(identityCrs);
 }
 
-describe('reprojectGeoJSONToPseudoLngLat', () => {
-    test('moves a simple-CRS position to the lng/lat mercator maps to the same world position', () => {
+describe('reprojectGeoJSONToWorld', () => {
+    test('moves an identity-CRS position to its world coordinates', () => {
         const point: GeoJSON.Point = {type: 'Point', coordinates: [45, 45]};
-        expect(reprojectGeoJSONToPseudoLngLat(point, createSimpleHelper()).coordinates).toEqual([90, expect.closeTo(pseudoLatOf45, 6)]);
+        expect(reprojectGeoJSONToWorld(point, createIdentityHelper()).coordinates).toEqual([0.75, 0.25]);
     });
 
     test('keeps the altitude and any further ordinates', () => {
         const point: GeoJSON.Point = {type: 'Point', coordinates: [0, 0, 123, 4]};
-        expect(reprojectGeoJSONToPseudoLngLat(point, createSimpleHelper()).coordinates).toEqual([0, 0, 123, 4]);
+        expect(reprojectGeoJSONToWorld(point, createIdentityHelper()).coordinates).toEqual([0.5, 0.5, 123, 4]);
     });
 
     test('walks features, collections, nested geometries and geometry collections without mutating the input', () => {
@@ -46,7 +45,7 @@ describe('reprojectGeoJSONToPseudoLngLat', () => {
         };
         const copy = JSON.parse(JSON.stringify(data));
 
-        const result = reprojectGeoJSONToPseudoLngLat(data, createSimpleHelper());
+        const result = reprojectGeoJSONToWorld(data, createIdentityHelper());
 
         expect(data).toEqual(copy);
         expect(result).not.toBe(data);
@@ -54,14 +53,14 @@ describe('reprojectGeoJSONToPseudoLngLat', () => {
         expect(result.features[0].properties).toBe(data.features[0].properties);
         expect(result.features[2].geometry).toBeNull();
         const polygon = result.features[0].geometry as GeoJSON.Polygon;
-        expect(polygon.coordinates[0][2]).toEqual([90, expect.closeTo(pseudoLatOf45, 6)]);
+        expect(polygon.coordinates[0][2]).toEqual([0.75, 0.25]);
         const collection = result.features[1].geometry as GeoJSON.GeometryCollection;
-        expect((collection.geometries[1] as GeoJSON.Point).coordinates).toEqual([90, expect.closeTo(0, 9)]);
+        expect((collection.geometries[1] as GeoJSON.Point).coordinates).toEqual([0.75, 0.5]);
     });
 });
 
-describe('reprojectGeoJSONFromPseudoLngLat', () => {
-    test('round trips with reprojectGeoJSONToPseudoLngLat, 3D coordinates and geometry collections included', () => {
+describe('reprojectGeoJSONFromWorld', () => {
+    test('round trips with reprojectGeoJSONToWorld, 3D coordinates and geometry collections included', () => {
         const feature: GeoJSON.Feature = {
             type: 'Feature',
             properties: {},
@@ -73,7 +72,7 @@ describe('reprojectGeoJSONFromPseudoLngLat', () => {
                 ]
             }
         };
-        const roundTripped = reprojectGeoJSONFromPseudoLngLat(reprojectGeoJSONToPseudoLngLat(feature, createSimpleHelper()), createSimpleHelper());
+        const roundTripped = reprojectGeoJSONFromWorld(reprojectGeoJSONToWorld(feature, createIdentityHelper()), createIdentityHelper());
         const geometries = (roundTripped.geometry as GeoJSON.GeometryCollection).geometries;
         expect((geometries[0] as GeoJSON.Point).coordinates).toEqual([expect.closeTo(-30, 9), expect.closeTo(-30, 9), 500]);
         expect((geometries[1] as GeoJSON.MultiPolygon).coordinates).toEqual([[[
@@ -82,5 +81,25 @@ describe('reprojectGeoJSONFromPseudoLngLat', () => {
             [expect.closeTo(45, 9), expect.closeTo(45, 9), 3],
             [expect.closeTo(0, 9), expect.closeTo(0, 9), 1]
         ]]]);
+    });
+});
+
+describe('reprojectGeoJSONSourceDiffToWorld', () => {
+    test('moves the added features and the replaced geometries, and keeps removals and property changes', () => {
+        const diff = {
+            remove: ['gone'],
+            add: [{type: 'Feature', id: 'new', properties: {}, geometry: {type: 'Point', coordinates: [45, 45]}}],
+            update: [
+                {id: 'moved', newGeometry: {type: 'Point', coordinates: [45, 45]}},
+                {id: 'renamed', addOrUpdateProperties: [{key: 'name', value: 'b'}]}
+            ]
+        } satisfies GeoJSONSourceDiff;
+
+        const result = reprojectGeoJSONSourceDiffToWorld(diff, createIdentityHelper());
+
+        expect(result.remove).toEqual(['gone']);
+        expect((result.add[0].geometry as GeoJSON.Point).coordinates).toEqual([0.75, 0.25]);
+        expect((result.update[0].newGeometry as GeoJSON.Point).coordinates).toEqual([0.75, 0.25]);
+        expect(result.update[1]).toBe(diff.update[1]);
     });
 });

@@ -4,8 +4,8 @@ import {NullWebGL2RenderingContext, createNullGL} from './null_gl.ts';
 import {extend} from '../../util/util.ts';
 import {MessageType, type ActorMessage, type RequestResponseMessageMap} from '../actor_messages.ts';
 import {Evented} from '../evented.ts';
-import {MercatorTransform} from '../../geo/projection/mercator_transform.ts';
-import {CrsWorldCoordinateHelper, simpleCrs, type CrsDefinition} from '../../geo/projection/crs.ts';
+import {createMercatorTransform, type MercatorTransform} from '../../geo/projection/mercator_transform.ts';
+import {CRSWorldCoordinateHelper, identityCrs, type CRS} from '../../geo/projection/crs.ts';
 import {RequestManager} from '../request_manager.ts';
 import {Terrain} from '../../render/terrain.ts';
 import {Painter} from '../../render/painter.ts';
@@ -39,7 +39,7 @@ export class StubMap extends Evented {
 
     constructor() {
         super();
-        this.transform = new MercatorTransform();
+        this.transform = createMercatorTransform();
         this._requestManager = new RequestManager();
     }
 
@@ -257,7 +257,7 @@ export function createTerrain(): Terrain {
         getCoverageIndex: () => null,
         getElevationForLngLatZoom: () => 1000,
         getElevationForLngLat: () => 1000,
-        hasElevationForLngLat: () => true,
+        getElevationAndDEMStateForLngLat: () => ({elevation: 1000, demState: 'loaded'}),
         getMinTileElevationForLngLatZoom: () => 0,
         resetElevationCache: () => {},
         getFramebuffer: () => ({}),
@@ -325,6 +325,16 @@ export function createDEM(heightFn: (x: number, y: number) => number, dim: numbe
     return new DEMData('dem', new RGBAImage({width: stride, height: stride}, pixels), 'terrarium');
 }
 
+/** A painter over a null GL context. */
+export function createPainter(): Painter {
+    return new Painter(createNullGL());
+}
+
+/** A tile manager over a raster-dem source that never loads, for terrain built in tests. */
+export function createRasterDEMTileManager(): TileManager {
+    return new TileManager('dem', {type: 'raster-dem', tiles: ['/dem/{z}/{x}/{y}.png'], tileSize: 512}, getMockDispatcher());
+}
+
 /** The margin a terrain's coverage index keeps between its elevation bracket and its tiles' lowest and highest elevation. */
 const COVERAGE_BRACKET_PADDING_M = 10;
 
@@ -345,21 +355,8 @@ export function createCoverageIndex(height: (lng: number, lat: number) => number
     };
 }
 
-/** A painter over a null GL context. */
-export function createPainter(): Painter {
-    return new Painter(createNullGL());
-}
-
-/** A tile manager over a raster-dem source that never loads, for terrain built in tests. */
-export function createRasterDEMTileManager(): TileManager {
-    return new TileManager('dem', {type: 'raster-dem', tiles: ['/dem/{z}/{x}/{y}.png'], tileSize: 512}, getMockDispatcher());
-}
-
-/**
- * @param transform - the transform whose projection the terrain follows; mercator when not given
- */
-export function createDEMTerrain(tileIDs: OverscaledTileID[], dem: DEMData | null, exaggeration: number = 1, transform?: IReadonlyTransform): Terrain {
-    const terrain = new Terrain(createPainter(), createRasterDEMTileManager(), {source: 'dem', exaggeration}, 'auto', () => (transform ?? new MercatorTransform()).worldCoordinateHelper);
+export function createDEMTerrain(tileIDs: OverscaledTileID[], dem: DEMData | null, exaggeration: number = 1): Terrain {
+    const terrain = new Terrain(createPainter(), createRasterDEMTileManager(), {source: 'dem', exaggeration});
     terrain.tileManager.getRenderableTiles = () => tileIDs.map(tileID => ({tileID}) as Tile);
     terrain.tileManager.getSourceTile = (tileID) => (dem ? {tileID, dem} as Tile : undefined);
     return terrain;
@@ -412,18 +409,18 @@ export function createFakeActor(shouldAbort?: () => boolean, onAbort?: () => voi
 }
 
 /**
- * A transform over the built-in simple CRS (the identity over lng/lat, with tile 0/0/0 spanning -90..90 on both
+ * A transform over the built-in identity CRS (the identity over lng/lat, with tile 0/0/0 spanning -90..90 on both
  * axes), sized to the given viewport.
  */
-export function createSimpleCrsTransform(width: number, height: number): MercatorTransform {
-    const transform = new MercatorTransform({
+export function createIdentityCrsTransform(width: number, height: number): MercatorTransform {
+    const transform = createMercatorTransform({
         minZoom: -5,
         maxZoom: 22,
         minPitch: 0,
         maxPitch: 85,
         renderWorldCopies: true,
     });
-    transform.setWorldCoordinateHelper(new CrsWorldCoordinateHelper(simpleCrs));
+    transform.setWorldCoordinateHelper(new CRSWorldCoordinateHelper(identityCrs));
     transform.resize(width, height);
     return transform;
 }
@@ -432,18 +429,63 @@ export function createSimpleCrsTransform(width: number, height: number): Mercato
  * A synthetic CRS whose axes both depend on lng and lat: lng/lat rotated by 30 degrees,
  * laid out in degrees, with tile 0/0/0 spanning -150..150 on each rotated axis.
  */
-export function createRotatedCrs(): CrsDefinition {
+export function createRotatedCrs(): CRS {
     const cos = Math.cos(Math.PI / 6);
     const sin = Math.sin(Math.PI / 6);
     return {
-        name: 'rotated-test',
-        project(lng, lat) {
-            return [lng * cos - lat * sin, lng * sin + lat * cos];
+        name: 'test:rotated',
+        projection: {
+            forward([lng, lat]) {
+                return [lng * cos - lat * sin, lng * sin + lat * cos];
+            },
+            inverse([x, y]) {
+                return [x * cos + y * sin, -x * sin + y * cos];
+            },
         },
-        unproject(x, y) {
-            return [x * cos + y * sin, -x * sin + y * cos];
+        tileMatrixSet: {origin: [-150, 150], extentAtZoom0: 300},
+    };
+}
+
+/**
+ * The identity CRS with a converter that answers only inside its tile matrix set, -90..90 on both axes,
+ * and gives `answerOutside` everywhere else.
+ */
+export function createIdentityCrsAnsweringInside(answerOutside: number[] | null): CRS {
+    return {
+        name: 'test:identity-answering-inside',
+        projection: {
+            forward([lng, lat]) {
+                return [lng, lat];
+            },
+            inverse([x, y]) {
+                return Math.abs(x) <= 90 && Math.abs(y) <= 90 ? [x, y] : answerOutside;
+            },
         },
-        tileMatrix: {origin: [-150, 150], extentAtZoom0: 300},
+        tileMatrixSet: {origin: [-90, 90], extentAtZoom0: 180},
+    };
+}
+
+/**
+ * A north polar stereographic CRS on a sphere, oriented like EPSG:3413 (lng -45 points down) and true to scale
+ * at 70N, with tile 0/0/0 spanning the EPSG:3413 grid NASA GIBS serves. Parallels are circles around the pole.
+ */
+export function createPolarStereographicCrs(): CRS {
+    const degrees = 180 / Math.PI;
+    const scale = 6378137 * (1 + Math.sin(70 / degrees));
+    const centralLng = -45;
+    return {
+        name: 'test:polar',
+        projection: {
+            forward([lng, lat]) {
+                const rho = scale * Math.tan(Math.PI / 4 - lat / degrees / 2);
+                const angle = (lng - centralLng) / degrees;
+                return [rho * Math.sin(angle), -rho * Math.cos(angle)];
+            },
+            inverse([x, y]) {
+                return [centralLng + Math.atan2(x, -y) * degrees, 90 - 2 * Math.atan(Math.hypot(x, y) / scale) * degrees];
+            },
+        },
+        tileMatrixSet: {origin: [-4194304, 4194304], extentAtZoom0: 8388608},
     };
 }
 

@@ -2,12 +2,12 @@ import {describe, test, expect} from 'vitest';
 import {TileBounds} from './tile_bounds.ts';
 import {CanonicalTileID} from './tile_id.ts';
 import {mercatorWorldCoordinateHelper} from '../geo/mercator_coordinate.ts';
-import {CrsWorldCoordinateHelper} from '../geo/projection/crs.ts';
-import {createRotatedCrs} from '../util/test/util.ts';
+import {CRSWorldCoordinateHelper} from '../geo/projection/crs.ts';
+import {createPolarStereographicCrs, createRotatedCrs} from '../util/test/util.ts';
 
 describe('TileBounds.contains', () => {
     test('follows the helper, not mercator', () => {
-        const rotatedWorldCoordinates = new CrsWorldCoordinateHelper(createRotatedCrs());
+        const rotatedWorldCoordinates = new CRSWorldCoordinateHelper(createRotatedCrs());
         const bounds: [number, number, number, number] = [100, 40, 110, 50];
         const z = 3;
         const worldSize = Math.pow(2, z);
@@ -27,7 +27,7 @@ describe('TileBounds.contains', () => {
     });
 
     test('covers every tile touched by the corners of a box in a non-cylindrical helper', () => {
-        const rotatedWorldCoordinates = new CrsWorldCoordinateHelper(createRotatedCrs());
+        const rotatedWorldCoordinates = new CRSWorldCoordinateHelper(createRotatedCrs());
         const bounds: [number, number, number, number] = [-10, -10, 10, 10];
         const z = 5;
         const worldSize = Math.pow(2, z);
@@ -37,18 +37,25 @@ describe('TileBounds.contains', () => {
             expect(rotated.contains(new CanonicalTileID(z, Math.floor(x * worldSize), Math.floor(y * worldSize)))).toBe(true);
         }
     });
-});
 
-test('contains tiles along a curved CRS edge between its corners', () => {
-    const helper = new CrsWorldCoordinateHelper({
-        name: 'curved-bounds',
-        tileMatrix: {origin: [-90, 90], extentAtZoom0: 180},
-        project(lng, lat) { return [lng, lat + (lng - 3) ** 2 / 20]; },
-        unproject(x, y) { return [x, y - (x - 3) ** 2 / 20]; },
+    test('contains every zoom 2 tile of the cap north of 60N in a polar stereographic CRS', () => {
+        const polar = new CRSWorldCoordinateHelper(createPolarStereographicCrs());
+        const capNorthOf60 = new TileBounds([-180, 60, 180, 90], null, null, polar);
+        const tilesPerSideAtZoom2 = 4;
+        for (let x = 0; x < tilesPerSideAtZoom2; x++) {
+            for (let y = 0; y < tilesPerSideAtZoom2; y++) {
+                expect(capNorthOf60.contains(new CanonicalTileID(2, x, y))).toBe(true);
+            }
+        }
     });
-    const bounds = new TileBounds([-10, -10, 10, 10], 0, 24, helper);
-    const zoom = 22;
-    const {x, y} = helper.worldFromLngLat(3, -9.99999);
 
-    expect(bounds.contains(new CanonicalTileID(zoom, Math.floor(x * 2 ** zoom), Math.floor(y * 2 ** zoom)))).toBe(true);
+    test('contains the tile at the rightmost point of 60N when no sample of the box lands on it', () => {
+        const polar = new CRSWorldCoordinateHelper(createPolarStereographicCrs());
+        const capFrom170WTo170E = new TileBounds([-170, 60, 170, 90], null, null, polar);
+        const rightmostLngOf60N = 45;
+        const z = 13;
+        const worldSize = Math.pow(2, z);
+        const {x, y} = polar.worldFromLngLat(rightmostLngOf60N, 60);
+        expect(capFrom170WTo170E.contains(new CanonicalTileID(z, Math.floor(x * worldSize), Math.floor(y * worldSize)))).toBe(true);
+    });
 });

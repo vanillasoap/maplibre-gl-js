@@ -1,9 +1,10 @@
 import {EXTENT} from '../data/extent.ts';
+import {mercatorWorldCoordinateHelper} from '../geo/mercator_coordinate.ts';
 
 import type {OverscaledTileID} from '../tile/tile_id.ts';
 import type {LngLat} from '../geo/lng_lat.ts';
-import type {WorldCoordinateHelper} from '../geo/transform_interface.ts';
 import type {TerrainTileManager} from '../tile/terrain_tile_manager.ts';
+import type {WorldCoordinateHelper} from '../geo/transform_interface.ts';
 
 export type TerrainElevationSampler = (x: number, y: number, extent: number) => number;
 
@@ -49,8 +50,7 @@ const NOT_COVERED: TerrainSample = {covered: false, demLoaded: false, elevation:
  * tile's DEM data, a loaded parent's where the tile's own has not loaded, or only the tiles' own.
  * @param tileManager - the terrain source's tiles, drawn and loaded
  * @param exaggeration - the terrain's exaggeration, which every sampled elevation includes
- * @param getWorldCoordinateHelper - the map's current world coordinate mapping, read on each sample because it
- * changes with the projection
+ * @param getWorldCoordinateHelper - the lng/lat to world mapping of the map's projection, mercator by default
  */
 export class TerrainCoverage {
     private _samplerCache = new Map<string, TerrainElevationSampler>();
@@ -61,7 +61,7 @@ export class TerrainCoverage {
     constructor(
         private readonly tileManager: TerrainTileManager,
         private readonly exaggeration: number,
-        private readonly getWorldCoordinateHelper: () => WorldCoordinateHelper
+        private readonly getWorldCoordinateHelper: () => WorldCoordinateHelper = () => mercatorWorldCoordinateHelper
     ) {}
 
     /** Drops the samplers and both indexes. Missing DEM data is never cached, so a later sample can retry. */

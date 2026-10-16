@@ -1,6 +1,6 @@
-import {latFromMercatorY, lngFromMercatorX, mercatorXfromLng, mercatorYfromLat} from '../geo/mercator_coordinate.ts';
-
+import type {CRSWorldCoordinateHelper} from '../geo/projection/crs.ts';
 import type {WorldCoordinateHelper} from '../geo/transform_interface.ts';
+import type {GeoJSONSourceDiff} from '../source/geojson_source_diff.ts';
 
 /**
  * A function mapping one GeoJSON position to another: the first two ordinates are the horizontal position, and any
@@ -10,28 +10,45 @@ type PositionMapper = (position: GeoJSON.Position) => GeoJSON.Position;
 
 /**
  * @internal
- * Rewrites every position of a GeoJSON object from the map's lng/lat to the "pseudo lng/lat" whose web mercator
- * projection is the map projection's world position, so that geojson-vt and supercluster, which only speak
- * mercator, tile a planar map's data in the right place of its world square.
+ * Rewrites every position of a GeoJSON object from the map's lng/lat to the map projection's world coordinates, x and
+ * y from 0 to 1 across its world square with y growing down, which geojson-vt tiles with `coordinates: 'unitSquare'`.
  * Returns a new object; the input is never mutated, and non-coordinate members are carried over as they are.
  */
-export function reprojectGeoJSONToPseudoLngLat<T extends GeoJSON.GeoJSON>(data: T, worldCoordinateHelper: WorldCoordinateHelper): T {
+export function reprojectGeoJSONToWorld<T extends GeoJSON.GeoJSON>(data: T, crsHelper: CRSWorldCoordinateHelper): T {
     return mapPositions(data, ([lng, lat, ...rest]) => {
-        const {x, y} = worldCoordinateHelper.worldFromLngLat(lng, lat);
-        return [lngFromMercatorX(x), latFromMercatorY(y), ...rest];
+        const {x, y} = crsHelper.worldFromLngLat(lng, lat);
+        return [x, y, ...rest];
     });
 }
 
 /**
  * @internal
- * The inverse of {@link reprojectGeoJSONToPseudoLngLat}: rewrites pseudo lng/lat positions (as returned by the
- * worker for cluster children and leaves) back to the map's lng/lat. Returns a new object.
+ * The inverse of {@link reprojectGeoJSONToWorld}: rewrites world coordinates (as returned by the worker for cluster
+ * children and leaves) back to the map's lng/lat. Returns a new object.
  */
-export function reprojectGeoJSONFromPseudoLngLat<T extends GeoJSON.GeoJSON>(data: T, worldCoordinateHelper: WorldCoordinateHelper): T {
-    return mapPositions(data, ([pseudoLng, pseudoLat, ...rest]) => {
-        const lngLat = worldCoordinateHelper.lngLatFromWorld(mercatorXfromLng(pseudoLng), mercatorYfromLat(pseudoLat));
+export function reprojectGeoJSONFromWorld<T extends GeoJSON.GeoJSON>(data: T, worldCoordinateHelper: WorldCoordinateHelper): T {
+    return mapPositions(data, ([x, y, ...rest]) => {
+        const lngLat = worldCoordinateHelper.lngLatFromWorld(x, y);
         return [lngLat.lng, lngLat.lat, ...rest];
     });
+}
+
+/**
+ * @internal
+ * Rewrites the geometries a diff adds or replaces, as {@link reprojectGeoJSONToWorld} does for whole data.
+ * Returns a new diff; removals and property changes are carried over as they are.
+ */
+export function reprojectGeoJSONSourceDiffToWorld(diff: GeoJSONSourceDiff, crsHelper: CRSWorldCoordinateHelper): GeoJSONSourceDiff {
+    const reprojected = {...diff};
+    if (diff.add) {
+        reprojected.add = diff.add.map(feature => reprojectGeoJSONToWorld(feature, crsHelper));
+    }
+    if (diff.update) {
+        reprojected.update = diff.update.map(update => update.newGeometry ?
+            {...update, newGeometry: reprojectGeoJSONToWorld(update.newGeometry, crsHelper)} :
+            update);
+    }
+    return reprojected;
 }
 
 function mapPositions<T extends GeoJSON.GeoJSON>(data: T, mapper: PositionMapper): T {
@@ -57,3 +74,4 @@ function mapPositions<T extends GeoJSON.GeoJSON>(data: T, mapper: PositionMapper
             return data;
     }
 }
+
