@@ -35,4 +35,4 @@ jobs:
           gh release create "$GITHUB_REF_NAME" "${{ steps.pack.outputs.tarball }}" \
             --repo "$GITHUB_REPOSITORY" \
             --title "$GITHUB_REF_NAME" \
-            --notes "MapLibre GL JS for Saumfar: upstream main at $(git rev-parse --short HEAD^2 2>/dev/null || git rev-parse --short HEAD) plus the \`saumfar\` branch's fixes. Custom CRS maps register with \`addProjection\`; GeoJSON sources need a worker projection handler, see docs/guides/custom-crs.md."
+            --notes "MapLibre GL JS $(v=${GITHUB_REF_NAME#v}; echo "${v%%-saumfar*}") for Saumfar, built from the \`saumfar\` branch at $(git rev-parse --short HEAD). Custom CRS maps register with \`addProjection\`; GeoJSON sources need a worker projection handler, see docs/guides/custom-crs.md."
